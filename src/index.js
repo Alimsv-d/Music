@@ -1,0 +1,226 @@
+// Worker entry point. Webhook-only bot on Cloudflare Workers.
+//
+// Routes:
+//   GET  /            branded status page
+//   GET  /health      JSON API health check
+//   GET  /setup?key=  bootstrap webhook + commands (key = ADMIN_SETUP_KEY)
+//   POST /webhook     Telegram updates (verified by WEBHOOK_SECRET header)
+//   GET  /dl/<sig>    signed MP3 proxy for inline-mode audio (HTTP Range ok)
+//   cron              webhook watchdog + broadcast job processing
+
+import { Ctx } from "./ctx.js";
+import { verifyLink } from "./utils/crypto.js";
+import { timingSafeEqualStr } from "./utils/crypto.js";
+import { handleMessage } from "./handlers/message.js";
+import { handleCallback } from "./handlers/callback.js";
+import { handleInlineQuery, handleChosenInline } from "./handlers/inline.js";
+import { setupWebhook, runBroadcastChunk } from "./handlers/admin.js";
+import { COMMANDS } from "./handlers/commands.js";
+import { t } from "./i18n/index.js";
+
+export default {
+  async fetch(request, env, exec) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+    const ctx = new Ctx(env, exec);
+    ctx.request = request;
+
+    try {
+      if (path === "/" || path === "") return statusPage(request, env);
+      if (path === "/health") return healthCheck(ctx);
+      if (path === "/setup") return setupRoute(request, env, ctx, url);
+      if (path === "/webhook" && request.method === "POST") return webhook(request, env, exec, ctx);
+      if (path.startsWith("/dl/")) return dlProxy(ctx, path, request);
+      return new Response("not found", { status: 404 });
+    } catch (e) {
+      console.error("fetch error:", e?.message);
+      try { await ctx.store.logError({ where: "fetch", msg: e?.message }); } catch {}
+      return new Response("error", { status: 500 });
+    }
+  },
+
+  async scheduled(event, env, exec) {
+    const ctx = new Ctx(env, exec);
+    exec.waitUntil(cronTick(ctx, event));
+  },
+};
+
+// ── webhook ───────────────────────────────────────────────────────────────────
+async function webhook(request, env, exec, ctx) {
+  // Verify Telegram's secret header.
+  const secret = request.headers.get("x-telegram-bot-api-secret-token") || "";
+  if (!env.WEBHOOK_SECRET || !timingSafeEqualStr(secret, env.WEBHOOK_SECRET)) {
+    return new Response("forbidden", { status: 403 });
+  }
+
+  let update;
+  try { update = await request.json(); } catch { return new Response("bad", { status: 400 }); }
+
+  // Acknowledge immediately; do the work in the background.
+  exec.waitUntil(processUpdate(ctx, update));
+  return new Response("ok");
+}
+
+async function processUpdate(ctx, update) {
+  try {
+    // Dedupe by update_id (10 min TTL).
+    if (update.update_id !== undefined) {
+      const dup = await ctx.store.seenUpdate(update.update_id);
+      if (dup) return;
+    }
+
+    if (update.message) {
+      await ctx.store.bump("updates");
+      return await handleMessage(ctx, update.message);
+    }
+    if (update.edited_message) {
+      // Treat edited messages lightly: only re-run search if it's a command.
+      return;
+    }
+    if (update.callback_query) return await handleCallback(ctx, update.callback_query);
+    if (update.inline_query) return await handleInlineQuery(ctx, update.inline_query);
+    if (update.chosen_inline_result) return await handleChosenInline(ctx, update.chosen_inline_result);
+    if (update.my_chat_member || update.chat_member) {
+      // Track joins/leaves & bot admin changes. Minimal: bump counters.
+      await ctx.store.bump("member_events");
+      return;
+    }
+  } catch (e) {
+    console.error("processUpdate:", e?.message);
+    try { await ctx.store.logError({ where: "update", msg: e?.message }); } catch {}
+  }
+}
+
+// ── /dl/<signed> MP3 proxy ────────────────────────────────────────────────────
+// Streams the resolved SoundCloud audio through the worker with Range support,
+// so Telegram can fetch it for InlineQueryResultAudio. Signed to prevent abuse.
+async function dlProxy(ctx, path, request) {
+  const token = decodeURIComponent(path.slice("/dl/".length)).replace(/\.mp3$/, "");
+  const v = await verifyLink(ctx.env.LINK_SECRET, token);
+  if (!v.ok) return new Response("forbidden", { status: 403 });
+
+  const [source, ...idParts] = v.id.split(":");
+  const id = idParts.join(":");
+  if (source !== "sc" || !id) return new Response("bad id", { status: 400 });
+
+  const upstream = `${ctx.env.SOUNDCLOUD_API_URL.replace(/\/$/, "")}/api/v1/download?id=${encodeURIComponent(id)}`;
+  const headers = {};
+  const range = request.headers.get("range");
+  if (range) headers["range"] = range;
+
+  let res;
+  try {
+    res = await fetch(upstream, { headers });
+  } catch {
+    return new Response("upstream", { status: 502 });
+  }
+  if (!res.ok && res.status !== 206) return new Response("upstream " + res.status, { status: 502 });
+
+  const out = new Headers();
+  out.set("content-type", res.headers.get("content-type") || "audio/mpeg");
+  const cl = res.headers.get("content-length"); if (cl) out.set("content-length", cl);
+  const cr = res.headers.get("content-range"); if (cr) out.set("content-range", cr);
+  out.set("accept-ranges", "bytes");
+  out.set("cache-control", "public, max-age=300");
+  return new Response(res.body, { status: res.status, headers: out });
+}
+
+// ── /setup ────────────────────────────────────────────────────────────────────
+async function setupRoute(request, env, ctx, url) {
+  const key = url.searchParams.get("key") || "";
+  if (!env.ADMIN_SETUP_KEY || !timingSafeEqualStr(key, env.ADMIN_SETUP_KEY)) {
+    return json({ ok: false, error: "forbidden" }, 403);
+  }
+  const report = { ok: true, steps: {} };
+  const base = env.PUBLIC_URL || url.origin;
+
+  try {
+    await ctx.tg.setWebhook(`${base}/webhook`, {
+      secret_token: env.WEBHOOK_SECRET,
+      allowed_updates: ["message", "edited_message", "callback_query", "inline_query", "chosen_inline_result", "my_chat_member", "chat_member"],
+      drop_pending_updates: true,
+      max_connections: 40,
+    });
+    report.steps.webhook = "ok";
+  } catch (e) { report.steps.webhook = e.message; report.ok = false; }
+
+  try {
+    await ctx.tg.setMyCommands(COMMANDS.private, { type: "all_private_chats" }, "fa");
+    await ctx.tg.setMyCommands(COMMANDS.private, { type: "all_private_chats" }, "en");
+    await ctx.tg.setMyCommands(COMMANDS.group, { type: "all_group_chats" });
+    report.steps.commands = "ok";
+  } catch (e) { report.steps.commands = e.message; }
+
+  try {
+    const desc = `🎧 ${env.BOT_NAME || "Music"} — جستجو، تشخیص و دانلود موزیک\n👨‍💻 ${env.CREATOR_NAME} @${env.OWNER_USERNAME}`;
+    await ctx.tg.setMyDescription({ description: desc });
+    await ctx.tg.setMyShortDescription({ short_description: "🎧 جستجو و دانلود موزیک / Music search & download" });
+    report.steps.description = "ok";
+  } catch (e) { report.steps.description = e.message; }
+
+  try {
+    report.webhook_info = await ctx.tg.getWebhookInfo();
+  } catch {}
+  return json(report, report.ok ? 200 : 500);
+}
+
+// ── /health ───────────────────────────────────────────────────────────────────
+async function healthCheck(ctx) {
+  const [sc, shz, insta, lyr] = await Promise.all([
+    ctx.sc.ping(), ctx.shz.ping(), ctx.insta.ping(), ctx.lyr.ping(),
+  ]);
+  let webhook = null;
+  try { const w = await ctx.tg.getWebhookInfo(); webhook = { url: w.url, pending: w.pending_update_count, error: w.last_error_message || null }; } catch {}
+  return json({
+    ok: true,
+    bot: ctx.env.BOT_NAME,
+    creator: `${ctx.env.CREATOR_NAME} @${ctx.env.OWNER_USERNAME}`,
+    time: new Date().toISOString(),
+    apis: { soundcloud_ms: sc, shazam_ms: shz, instagram_ms: insta, lrclib_ms: lyr },
+    webhook,
+  });
+}
+
+// ── / status page ────────────────────────────────────────────────────────────
+function statusPage(request, env) {
+  const name = env.BOT_NAME || "Music";
+  const html = `<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>${name} Bot</title>
+<style>body{margin:0;font-family:system-ui,Tahoma;background:#0d1117;color:#e6edf3;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.c{text-align:center;padding:2rem}.dot{display:inline-block;width:14px;height:14px;border-radius:50%;background:#3fb950;box-shadow:0 0 12px #3fb950;vertical-align:middle}
+h1{font-size:2rem;margin:.4rem 0}.st{color:#3fb950;font-weight:700}.muted{color:#8b949e}a{color:#58a6ff}</style></head>
+<body><div class="c"><div class="dot"></div><h1>🎧 ${name} Bot</h1>
+<p class="st">Online</p><p class="muted">Music search · recognize · download<br>on Cloudflare Workers</p>
+<p class="muted">👨‍💻 ${env.CREATOR_NAME || "Ali Mousavi"} — <a href="https://t.me/${env.OWNER_USERNAME || "AliMsvD"}">@${env.OWNER_USERNAME || "AliMsvD"}</a></p></div></body></html>`;
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
+// ── cron ──────────────────────────────────────────────────────────────────────
+async function cronTick(ctx, event) {
+  // 1) resume any pending broadcast jobs (every minute).
+  try {
+    const jobs = (await ctx.store.listJobs()).filter((j) => j.status === "queued" || j.status === "running");
+    for (const j of jobs) ctx.exec.waitUntil(runBroadcastChunk(ctx, j.id));
+  } catch (e) { await ctx.store.logError({ where: "cron.jobs", msg: e.message }); }
+
+  // 2) webhook watchdog (every 5-min trigger — cheap enough to run each tick).
+  try {
+    const info = await ctx.tg.getWebhookInfo();
+    const base = ctx.env.PUBLIC_URL || "";
+    const want = `${base.replace(/\/$/, "")}/webhook`;
+    const bad = info.last_error_message || (base && info.url !== want);
+    if (bad) {
+      await setupWebhook(ctx);
+      const owner = ctx.ownerId;
+      if (owner) {
+        await ctx.tg.sendMessage(owner,
+          `⚠️ Webhook ${info.last_error_message ? "had an error" : "mismatched"} and was reset.\n` +
+          `err: ${info.last_error_message || "url mismatch"}`).catch(() => {});
+      }
+    }
+  } catch (e) { /* no token configured yet */ }
+}
+
+function json(obj, status = 200) {
+  return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json; charset=utf-8" } });
+}
