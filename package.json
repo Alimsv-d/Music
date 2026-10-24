@@ -1,0 +1,26 @@
+{
+  "name": "music-bot",
+  "version": "1.0.0",
+  "description": "Always-on Telegram music bot on Cloudflare Workers — search, recognize, download, inline mode. By Ali Mousavi (@AliMsvD).",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "node scripts/ensure-kv.mjs && wrangler deploy",
+    "setup": "node scripts/setup.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "node scripts/e2e.mjs",
+    "lint": "node scripts/lint.mjs",
+    "secret-scan": "node scripts/secret-scan.mjs",
+    "live": "node scripts/live-check.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.8.0",
+    "vitest": "^3.0.0",
+    "wrangler": "^4.152.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

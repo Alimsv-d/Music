@@ -1,0 +1,9 @@
+.dev.vars
+.wrangler
+node_modules
+*.log
+.DS_Store
+/tmp
+cleanup
+.cleanup_trash
+package-lock.json.tmp
