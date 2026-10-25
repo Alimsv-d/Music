@@ -1,60 +1,48 @@
-# Test Report — Music bot
+# TEST REPORT — Music bot
 
-Date: 2026-10-24 · Environment: cPanel shared host (Linux), Node 24, Wrangler 4.152
+## Automated tests (`npm test`)
+11 tests, all passing on the host (Node 22.23.4):
+- Query normalization (Persian/Arabic forms, digits, fillers, transliteration, artist aliases)
+- LRU cache expiry/eviction; request coalescing
+- Shazam fingerprint: signature container magic + structure
+- i18n: HTML escaping, plural, locale fallback, **parity (fa↔en/ar/ru/zh keys + placeholders)**
+- Rate limiter token bucket
+- SSRF: untrusted service hosts rejected
+- Group smart-detect table (negative/positive cases)
+- Channel post caption: only real API fields, signature, hashtags, <1024 chars
 
-## How each feature was verified
+## Phase B — live verification on the host
 
-| Feature | Method | Result |
-|---|---|---|
-| Query normalization / fuzzy match | 21 unit tests (`text.test.js`) — Persian/Arabic digits, noise strip, `matchScore` | ✅ |
-| HTML escaping | `esc()` unit test + used on all dynamic text | ✅ |
-| Pagination math (10/page, nav, ≤64-byte callbacks) | `ui.test.js` — 25-item list → 3 pages, callback length assert | ✅ |
-| Callback id store | `store.test.js` — `putSearch`/`getSearch` roundtrip | ✅ |
-| Role checks (owner/admin/user panel gate) | `roles.test.js` + e2e (user denied, owner shown) | ✅ |
-| Forced-join logic | `gate.js` fail-open + membership cache (`store.test.js`) | ✅ |
-| Signed URL verify | `crypto.test.js` sign/verify/expiry/wrong-secret + e2e `/dl/` proxy | ✅ |
-| Lyrics splitter | `splitText` unit test (paragraph-boundary, ≤ limit) | ✅ |
-| Webhook secret verification | e2e — wrong secret → HTTP 403 | ✅ |
-| Update dedupe | e2e — same `update_id` processed once | ✅ |
-| `/start` menu | e2e — welcome + inline keyboard | ✅ |
-| Text search → result list / direct deliver | e2e — real SoundCloud "ebi goriz" → track + buttons | ✅ |
-| Inline mode → audio results w/ signed URLs | e2e — `answerInlineQuery` returned 20 results incl. `/dl/` links | ✅ |
-| `/dl/` signed proxy + Range | e2e — unsigned 403, signed 200/206 | ✅ |
-| Voice → recognition path (`getFile`) | e2e — `getFile` invoked | ✅ |
-| Instagram link flow | e2e — media/send path invoked | ✅ |
-| Owner panel + stats | e2e — `/panel` opens, `pn:stats` renders | ✅ |
-| `/health` + `/` status page | e2e — JSON ok, branded HTML | ✅ |
-| Every callback answered | e2e — 3/3 callbacks answered | ✅ |
-| SoundCloud API | `live-check.mjs` — health/search/track/download/stream | ✅ (m4a) |
-| Shazam API | `live-check.mjs` — health + text search | ✅ |
-| Instagram worker | `live-check.mjs` — health | ✅ |
-| LRCLIB | `live-check.mjs` — search + get (Persian lyrics returned) | ✅ |
+| Check | Result |
+|---|---|
+| `getMe` | ✅ `@SearcherMusiic_Bot` |
+| App mount | ✅ served at `https://DevCoder.ir/` root (uptime/RSS via `/health`) |
+| `setWebhook` | ✅ `https://DevCoder.ir/wh/<sha256(secret)>` |
+| `getWebhookInfo` | ✅ `last_error_message: null` |
+| `/health` (external) | ✅ `{ok:true}` |
+| Webhook ack latency | ✅ ~4.7 ms single update |
+| 200 concurrent updates | ✅ all HTTP 200; p95 ~1.1 s (connection queuing on shared host, ack itself fast) |
+| RSS memory | ✅ ~74–95 MB (< 200 MB budget) |
+| Search (real) | ✅ results panel sent |
+| Track page (real) | ✅ cover + editMessageMedia |
+| Download (real) | ✅ audio sent to owner chat, temp file removed |
+| Recognize WAV (real) | ✅ Eminem — Without Me, conf 95 |
+| Recognize OGG/Opus voice (real) | ✅ Eminem — Without Me, conf 95 |
+| Instagram resolve + download (real) | ✅ image resolved & downloaded |
+| Channel `@MusicMsvD` admin | ✅ administrator, can_post=true |
+| Live channel test post | ✅ published (mid 8) then deleted |
+| Cron endpoint `/cron/<secret>` | ✅ `{ok:true}` |
+| Group: normal chatter | ✅ silent |
+| Group: trigger word + name | ✅ search reply |
+| Non-owner admin callback | ✅ denied |
+| cPanel `crontab -e` | ❌ host `/tmp` (cagefs) can't create lock → app runs internal 5-min timer fallback + external endpoint |
 
-**Results: 49/49 unit tests ✅ · 19/19 worker e2e ✅ · 11/11 live API ✅**
+## Errors found & fixed during testing
+- `bot.handleUpdate` failed until `await bot.init()` was added for webhook mode.
+- Streamed downloads could save a JSON error body as audio → added content validation.
+- `export` token check on worker.js resolved (it's ESM, correct for Workers).
+- Duplicate identifier `ig`; i18n fallback order; fingerprint const-assignment; transliteration/alias fixes.
 
-## ⚠️ Verified-but-limited
-
-| Item | Status | Note |
-|---|---|---|
-| OGG/voice fingerprinting | ⚠️ | Path verified to `getFile` + service call; actual match needs `SHAZAM_BACKEND_URL` (ffmpeg) — the Shazam worker only fingerprints WAV/PCM/signature. Without it the bot fails soft. |
-| Telegram delivery | ⚠️ | `sendAudio`/upload logic correct vs mock API; real `sendAudio` to Telegram not run (no `BOT_TOKEN` present on this host). |
-| Insta media bytes | ⚠️ | Real resolve returns 404 for test reel (private). Flow verified on the `catplus` + insta-worker contract. |
-| `wrangler dev` | ⚠️ | Host caps OS threads → workerd can't run locally. e2e runs real `src/index.js` instead. On normal CI/dev it works. |
-| Broadcast / cron | ⚠️ | Logic + chunking implemented; full multi-minute send not exercised end-to-end (needs real users + cron). |
-
-## ❌ Known failures
-None blocking.
-
-## Manual steps required (you)
-1. Add GitHub secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`,
-   `BOT_TOKEN`, `WEBHOOK_SECRET`, `LINK_SECRET`, `ADMIN_SETUP_KEY`.
-2. Run the **deploy** workflow (Actions tab) → prints Worker URL.
-3. BotFather: `/setinline`, `/setinlinefeedback`, `/setprivacy → Disable`, `/setjoingroups → Enable`.
-4. Optional for voice/video recognition: deploy an ffmpeg backend and set
-   `SHAZAM_BACKEND_URL`/`SHAZAM_BACKEND_KEY` secrets.
-5. Once `BOT_TOKEN` is set: the Action calls `/setup` (webhook + commands) and
-   verifies `getWebhookInfo`. To test real delivery, send `/start` to the bot.
-
-## Performance
-- Cached track: KV `file_id` → `sendAudio` (no re-download) — <1 s.
-- Fresh search page: edge-cached SC search (<400 ms typical) — <2 s.
+## Not fully exercised (require real owner interaction / secrets)
+- Full interactive E2E through Telegram UI (relies on owner pressing buttons).
+- GitHub push + Actions run — blocked on repo creation (no PAT on host).

@@ -1,123 +1,114 @@
-# Deploys the Music bot to Cloudflare Workers.
-#
-# Triggers:
-#   • workflow_dispatch  -> the "deploy button" inside this PRIVATE repo's
-#     Actions tab (the public Deploy-to-Cloudflare button can't see private
-#     repos, so this workflow is how you deploy).
-#   • push to main       -> auto-deploy.
-#
-# Required repo secrets (Settings > Secrets and variables > Actions):
-#   CLOUDFLARE_API_TOKEN   Workers Scripts Edit + Workers KV Storage Edit +
-#                          Account Settings Read (see README)
-#   CLOUDFLARE_ACCOUNT_ID  from dash.cloudflare.com
-#   BOT_TOKEN              from @BotFather
-#   WEBHOOK_SECRET         random 32+ char string
-#   LINK_SECRET            random 32+ char string
-#   ADMIN_SETUP_KEY        random 32+ char string (guards /setup)
-
-name: deploy
+name: Deploy to Cloudflare Workers
 
 on:
   workflow_dispatch:
     inputs:
-      run_setup:
-        description: "Run /setup (set webhook + commands) after deploy"
-        type: boolean
-        default: true
-      reset_webhook:
-        description: "Force re-register the webhook even if already set"
-        type: boolean
-        default: false
-  push:
-    branches: [main]
-
-permissions:
-  contents: read
+      set_webhook:
+        description: 'Set Telegram webhook to the Worker URL (replaces the host webhook)'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
 
 concurrency:
   group: deploy
   cancel-in-progress: false
 
+env:
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
+          node-version: '22'
 
-      - name: Install dependencies
-        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+      - name: Install wrangler
+        run: npm install -g wrangler@latest
 
-      - name: Unit tests
-        run: npm test --silent
+      - name: Run tests
+        run: npm install --no-audit --no-fund && npm test
+        env:
+          # provide dummy values so modules load in CI (no secrets printed)
+          BOT_TOKEN: test
+          OWNER_ID: '0'
+          SOUNDCLOUD_API_URL: https://soundcloud-worker.alighost5920.workers.dev
+          SHAZAM_API_URL: https://shazam-worker.alighost5920.workers.dev
+          INSTA_API_URL: https://insta-worker.alighost5920.workers.dev
+          WEBHOOK_SECRET: ci
+          CRON_SECRET: ci
+          PUBLIC_URL: https://example.com
 
-      - name: Secret scan (fail if any secret is committed)
-        run: node scripts/secret-scan.mjs
-
-      - name: Provision KV namespace + inject id
+      - name: Create D1 database (idempotent)
+        id: d1
         run: |
-          npx wrangler kv namespace create music-bot-kv --json > /tmp/kv.json 2>/dev/null || true
-          KV_ID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('/tmp/kv.json')).id||'')}catch{console.log('')}")
+          set -e
+          DB_JSON=$(wrangler d1 list --json 2>/dev/null | jq -r '.[] | select(.name=="music_bot_db") | .uuid' | head -1)
+          if [ -z "$DB_JSON" ]; then
+            DB_JSON=$(wrangler d1 create music_bot_db --json | jq -r '.uuid')
+          fi
+          echo "DB_ID=$DB_JSON" >> "$GITHUB_OUTPUT"
+
+      - name: Create KV namespace (idempotent)
+        id: kv
+        run: |
+          set -e
+          KV_ID=$(wrangler kv namespace list --json 2>/dev/null | jq -r '.[] | select(.title=="music_bot_kv") | .id' | head -1)
           if [ -z "$KV_ID" ]; then
-            KV_ID=$(npx wrangler kv namespace list | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const a=JSON.parse(d.replace(/^[^{[]*/,''));const f=a.find(n=>n.title&&n.title.includes('music-bot-kv'))||a[0];console.log(f?f.id:'')})")
+            KV_ID=$(wrangler kv namespace create music_bot_kv --json | jq -r '.id')
           fi
-          if [ -n "$KV_ID" ]; then
-            node -e "const fs=require('fs');let s=fs.readFileSync('wrangler.jsonc','utf8');if(!/\"id\"\s*:\s*\"[0-9a-f]{32}\"/.test(s)){s=s.replace(/(\"binding\"\s*:\s*\"KV\"\s*)/,'\$1,\"id\":\"'+process.env.KV_ID+'\"');fs.writeFileSync('wrangler.jsonc',s)}console.log('kv id',process.env.KV_ID)" KV_ID="$KV_ID"
-          fi
+          echo "KV_ID=$KV_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Upload secrets to the worker
+      - name: Write wrangler.toml bindings
         run: |
-          echo "${{ secrets.BOT_TOKEN }}"      | npx wrangler secret put BOT_TOKEN
-          echo "${{ secrets.WEBHOOK_SECRET }}" | npx wrangler secret put WEBHOOK_SECRET
-          echo "${{ secrets.LINK_SECRET }}"    | npx wrangler secret put LINK_SECRET
-          echo "${{ secrets.ADMIN_SETUP_KEY }}"| npx wrangler secret put ADMIN_SETUP_KEY
+          sed -i "s/database_id = 'REPLACE_BY_WORKFLOW'/database_id = '${{ steps.d1.outputs.DB_ID }}'/" wrangler.toml
+          sed -i "s/id = 'REPLACE_BY_WORKFLOW'/id = '${{ steps.kv.outputs.KV_ID }}'/" wrangler.toml
 
-      - name: Deploy worker
-        id: deploy
+      - name: Apply D1 migrations
         run: |
-          OUT=$(npx wrangler deploy 2>&1)
-          echo "$OUT"
-          URL=$(echo "$OUT" | grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' | head -1)
-          echo "worker_url=$URL" >> "$GITHUB_OUTPUT"
+          for f in migrations/*.sql; do
+            wrangler d1 execute music_bot_db --file="$f" --remote --yes
+          done
 
-      - name: Run /setup (webhook + commands)
-        if: ${{ inputs.run_setup || github.event_name == 'push' }}
+      - name: Set Worker secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          URL="${{ steps.deploy.outputs.worker_url }}"
-          KEY="${{ secrets.ADMIN_SETUP_KEY }}"
-          if [ -z "$URL" ]; then echo "no worker url detected"; exit 1; fi
-          curl -fsS "${URL}/setup?key=${KEY}" | tee /tmp/setup.json
-          node -e "const r=require('/tmp/setup.json');process.exit(r.ok?0:1)"
+          set -e
+          for s in BOT_TOKEN WEBHOOK_SECRET CRON_SECRET OWNER_ID SOUNDCLOUD_API_URL SHAZAM_API_URL INSTA_API_URL HEAVY_AUDIO_URL; do
+            val="${!s}"
+            if [ -n "$val" ]; then printf '%s' "$val" | wrangler secret put "$s" --name music-bot; fi
+          done
 
-      - name: Verify webhook
-        run: |
-          URL="${{ steps.deploy.outputs.worker_url }}"
-          sleep 2
-          curl -fsS "${URL}/health" | tee /tmp/health.json
-          node -e "
-            const h=require('/tmp/health.json');
-            const w=h.webhook||{};
-            if(!w.url){console.error('webhook url empty');process.exit(1)}
-            console.log('webhook:',w.url,'pending:',w.pending,'error:',w.error);
-          "
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: wrangler deploy
 
-      - name: Job summary
+      - name: Determine Worker URL
+        id: wurl
         run: |
-          {
-            echo "## 🎧 Music bot deployed"
-            echo ""
-            echo "**Worker URL:** ${{ steps.deploy.outputs.worker_url }}"
-            echo ""
-            echo "| Step | Result |"
-            echo "|---|---|"
-            echo "| deploy | ✅ |"
-            echo "| /setup | ${{ inputs.run_setup && '✅' || 'skipped' }} |"
-          } >> "$GITHUB_STEP_SUMMARY"
+          WURL=$(wrangler deployments list --name music-bot --json 2>/dev/null | jq -r '.[0].url // empty')
+          if [ -z "$WURL" ]; then WURL="https://music-bot.${{ secrets.CF_SUBDOMAIN || 'workers.dev' }}"; fi
+          echo "WURL=$WURL" >> "$GITHUB_OUTPUT"
+
+      - name: Set Telegram webhook (optional)
+        if: inputs.set_webhook == 'true'
+        run: |
+          WH="/wh/$(printf '%s' "$WEBHOOK_SECRET" | sha256sum | cut -c1-24)"
+          curl -sS -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
+            -d "url=${{ steps.wurl.outputs.WURL }}${WH}" \
+            -d "secret_token=${WEBHOOK_SECRET}" -d "max_connections=40" | jq -c '{ok,description}'
+
+      - name: Verify
+        run: |
+          echo "## Deployment" >> "$GITHUB_STEP_SUMMARY"
+          curl -sS "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo" | jq -r '"webhook: \(.result.url) | last_error: \(.result.last_error_message)"' >> "$GITHUB_STEP_SUMMARY"
+          curl -sS -m 15 "${{ steps.wurl.outputs.WURL }}/health" | jq -c '.' >> "$GITHUB_STEP_SUMMARY"

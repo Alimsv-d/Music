@@ -1,137 +1,97 @@
-// Shazam (Shzm) adapter. Wraps the owner's shazam-worker `/api/v1/*` API.
-//
-// Discovered live endpoints:
-//   GET  /api/v1/health         -> {ok,data:{status}}
-//   POST /api/v1/search         {query,limit,lyrics} -> {data:{found,results,track?…}}
-//   GET  /api/v1/lyrics?artist=&title=  -> {data:{found,lyrics:{text}}}
-//   POST /api/v1/recognize      multipart file=.wav | json {signature}|{pcm_base64}
-//                               -> {data:{found,track:{title,artist,album,
-//                                   release_date,genre,artwork,links},lyrics,confidence}}
-//   POST /api/v1/recognize/url  {url} -> needs BACKEND_URL (ffmpeg); optional.
-//
-// Audio format caveat (documented): the worker only fingerprints WAV/PCM or a
-// pre-computed Shazam signature. Telegram voice is OGG-Opus; without an ffmpeg
-// backend we cannot decode it in a Worker. We therefore:
-//   * accept WAV upload directly,
-//   * accept raw s16le PCM via `pcm_base64`,
-//   * fall back to recognize/url when SHAZAM_BACKEND_URL is configured,
-//   * otherwise degrade gracefully (caller shows "send clearer clip").
+'use strict';
+// Shazam (Shzm) service client. Fingerprint computed in a worker thread.
+const path = require('node:path');
+const { Worker } = require('node:worker_threads');
+const config = require('../config');
+const { postJson, getJson } = require('../core/http');
+const { coalesce } = require('../core/cache');
 
-import { http, httpJson, HttpError } from "../utils/http.js";
-import { trackKey, toYear } from "./track.js";
+const base = () => config.shazamApi;
+const WORKER = path.join(__dirname, 'fingerprint_worker.js');
+let workerPool = [];
+const POOL = 2;
 
-export class Shazam {
-  constructor(env) {
-    this.base = (env.SHAZAM_API_URL || "").replace(/\/$/, "");
-    this.timeout = +(env.API_TIMEOUT_MS || 10000);
-    this.backendUrl = env.SHAZAM_BACKEND_URL || "";
-    this.backendKey = env.SHAZAM_BACKEND_KEY || "";
+class ServiceError extends Error {
+  constructor(code, message, status) { super(message || code); this.code = code; this.status = status || 0; }
+}
+
+function getWorker() {
+  for (const w of workerPool) if (!w.busy) { w.busy = true; return w; }
+  if (workerPool.length < POOL) {
+    const w = { worker: null, busy: true };
+    workerPool.push(w);
+    return w;
   }
+  return null; // caller queues
+}
 
-  /** Text search (title/artist/lyrics). -> {found, results:[{artist,title}], track?, artwork, lyrics} */
-  async search(query, limit = 8) {
-    const data = await httpJson(`${this.base}/api/v1/search`, {
-      method: "POST",
-      timeout: this.timeout,
-      headers: { "content-type": "application/json" },
-       body: JSON.stringify({ query, limit, lyrics: true }),
-    });
-    return data.data || data;
-  }
-
-  /** Lyrics for artist+title. -> {found, lyrics:{text, synced}} */
-  async lyrics(artist, title) {
-    const url = `${this.base}/api/v1/lyrics?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`;
-    const data = await httpJson(url, { timeout: this.timeout });
-    return data.data || data;
-  }
-
-  _normTrack(t, extra = {}) {
-    if (!t || !t.title) return null;
-    return {
-      id: t.shazam_id || t.apple_id || `${t.artist}-${t.title}`,
-      key: trackKey("shz", t.shazam_id || `${t.artist}::${t.title}`),
-      source: "shz",
-      title: t.title,
-      artist: t.artist || "",
-      album: t.album || "",
-      year: toYear(t.release_date),
-      date: t.release_date || "",
-      genre: t.genre || "",
-      artwork: t.artwork_hq || t.artwork || null,
-      previewUrl: t.preview_url || null,
-      links: t.links || {},
-      duration_ms: t.duration_ms || 0,
-      confidence: extra.confidence ?? null,
-      lyrics: extra.lyrics || null,
-    };
-  }
-
-  /**
-   * Recognize from raw audio bytes.
-   * `bytes` = Uint8Array; `kind` = "wav" | "pcm" | "ogg" | other.
-   * Returns normalized Track or null.
-   */
-  async recognize(bytes, kind = "wav", filename = "audio.wav") {
-    let result;
-    if (kind === "pcm") {
-      // Send raw s16le 16kHz mono as base64 JSON.
-      const b64 = bytesToB64(bytes);
-      const data = await httpJson(`${this.base}/api/v1/recognize`, {
-        method: "POST",
-        timeout: this.timeout,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ pcm_base64: b64, lyrics: true }),
-      });
-      result = data.data || data;
-    } else if (kind === "wav") {
-      const fd = new FormData();
-      fd.append("lyrics", "true");
-      fd.append("file", new Blob([bytes], { type: "audio/wav" }), filename);
-      const res = await http(`${this.base}/api/v1/recognize`, {
-        method: "POST",
-        timeout: this.timeout,
-        body: fd,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!data.ok && !data.data) return null;
-      result = data.data || data;
-    } else {
-      // Unsupported container without backend.
-      return null;
-    }
-    if (!result || !result.found || !result.track) return null;
-    return this._normTrack(result.track, { confidence: result.confidence, lyrics: result.lyrics });
-  }
-
-  /** Recognize from a remote URL — only works when BACKEND_URL is configured. */
-  async recognizeUrl(url) {
-    if (!this.backendUrl) return null;
-    const data = await httpJson(`${this.base}/api/v1/recognize/url`, {
-      method: "POST",
-      timeout: 45000,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ url }),
-    });
-    const d = data.data || data;
-    if (!d || !d.found || !d.track) return null;
-    return this._normTrack(d.track, { confidence: d.confidence, lyrics: d.lyrics });
-  }
-
-  async ping() {
-    const t = Date.now();
+async function fingerprintPcm(pcm /* Int16Array */, maxSeconds = 12, timeout = 20000) {
+  return new Promise((resolve, reject) => {
+    const slot = getWorker();
+    if (!slot) return reject(new ServiceError('BUSY', 'fingerprint workers busy'));
+    const release = () => { slot.busy = false; };
     try {
-      await httpJson(`${this.base}/api/v1/health`, { timeout: 5000, retries: 0 });
-      return Date.now() - t;
-    } catch { return -1; }
-  }
+      const w = new Worker(WORKER, { workerData: { pcm: Array.from(pcm), maxSeconds } });
+      slot.worker = w;
+      const to = setTimeout(() => { w.terminate(); release(); reject(new ServiceError('TIMEOUT', 'fingerprint timeout')); }, timeout);
+      w.once('message', (m) => { clearTimeout(to); release(); w.terminate(); m.ok ? resolve(m) : reject(new ServiceError('FP_FAIL', m.error)); });
+      w.once('error', (e) => { clearTimeout(to); release(); reject(new ServiceError('FP_ERR', e.message)); });
+    } catch (e) { release(); reject(new ServiceError('FP_ERR', e.message)); }
+  });
 }
 
-function bytesToB64(bytes) {
-  let bin = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+async function recognizeBySignature(pcm, { lyrics = true } = {}) {
+  // Compute fingerprint locally, POST signature; fallback to raw PCM.
+  let uri, samplems;
+  try {
+    ({ uri, samplems } = await fingerprintPcm(pcm));
+  } catch (_) {
+    uri = null;
   }
-  return btoa(bin);
+  if (uri) {
+    const d = await postJson(base() + '/api/v1/recognize', { signature: uri, samplems, lyrics }, { timeout: 20000 });
+    if (d.ok && d.data) return d.data;
+    if (d.error && d.error.code === 'E_NO_MATCH') throw new ServiceError('E_NO_MATCH', 'no match', 404);
+    // fall through to PCM on other errors
+  }
+  const pcmB64 = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).toString('base64');
+  const d = await postJson(base() + '/api/v1/recognize', { pcm: pcmB64, lyrics }, { timeout: 30000 });
+  if (d.ok && d.data) return d.data;
+  throw new ServiceError(d.error && d.error.code || 'E_UPSTREAM', 'recognize failed', d.status);
 }
+
+async function recognizeWav(wavBuf, { lyrics = true } = {}) {
+  // Send raw WAV (worker decodes). Prefer fingerprint when we can decode anyway.
+  const res = await require('../core/http').request(base() + '/api/v1/recognize', {
+    method: 'POST', headers: { 'Content-Type': 'audio/wav', Accept: 'application/json' },
+    body: wavBuf, timeout: 30000,
+  });
+  const d = res.json();
+  if (d.ok && d.data) return d.data;
+  throw new ServiceError(d.error && d.error.code || 'E_UPSTREAM', 'recognize failed', d.status);
+}
+
+async function searchText(query, limit = 6, lyrics = false) {
+  const key = `shq:${query.toLowerCase()}`;
+  return coalesce(key, async () => {
+    const d = await postJson(base() + '/api/v1/search', { query, limit, lyrics }, { timeout: 12000 });
+    if (!d.ok) throw new ServiceError(d.error && d.error.code || 'SEARCH_FAIL', 'search failed');
+    return d.data;
+  });
+}
+
+async function lyrics(artist, title) {
+  try {
+    const d = await getJson(base() + '/api/v1/lyrics?' + new URLSearchParams({ artist, title }), { timeout: 12000 });
+    if (d.ok && d.data && d.data.available) return d.data;
+    return null;
+  } catch (_) { return null; }
+}
+
+async function health() {
+  const t0 = Date.now();
+  try { const d = await getJson(base() + '/health', { timeout: 8000, retries: 1 }); return { ok: !!d.ok, ms: Date.now() - t0 }; }
+  catch (e) { return { ok: false, ms: Date.now() - t0, error: e.code || e.message }; }
+}
+
+module.exports = { recognizeBySignature, recognizeWav, searchText, lyrics, fingerprintPcm, health, ServiceError };
