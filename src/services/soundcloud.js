@@ -24,6 +24,9 @@ async function call(path, params, timeout) {
 }
 
 function sidOf(track) { return String(track.sid || (track.id || '').replace(/^sc_/, '')); }
+// Playable = unencrypted MP3/progressive (Telegram/ffmpeg can fully decode).
+// Encrypted HLS (m4a/CENC) is NOT playable by ffmpeg -> skip those.
+function isPlayable(t) { return !!(t && (t.hasMp3 || t.hasProgressive || (t.downloadable && !t.hasHls))); }
 
 async function search(q, page = 1, lang) {
   const key = `s:${q.toLowerCase()}:${page}`;
@@ -164,4 +167,4 @@ async function health() {
   catch (e) { return { ok: false, ms: Date.now() - t0, error: e.code || e.message }; }
 }
 
-module.exports = { search, track, resolveUrl, checkDownload, downloadFile, downloadHls, parseM3U8, streamUrl, downloadUrl, hlsUrl, coverUrl, sidOf, health, ServiceError };
+module.exports = { search, track, resolveUrl, checkDownload, downloadFile, downloadHls, parseM3U8, streamUrl, downloadUrl, hlsUrl, coverUrl, sidOf, isPlayable, health, ServiceError };

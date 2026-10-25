@@ -11,13 +11,19 @@ const sc = require('../services/soundcloud');
 const sh = require('../services/shazam');
 const ig = require('../services/instagram');
 const { normalize, transliterate, aliasFor, isSoundCloudUrl, similarity } = require('../services/query');
+const { cleanTrackMeta } = require('../services/trackMeta');
 const { downloadAndSend } = require('./send');
 const { processAudio } = require('./audio');
 
 const SEARCH_PAGE = 7;
 
 function sidOf(tr) { return sc.sidOf(tr); }
-function card(tr) { return `${tr.artist || '?'} — ${tr.title || '?'}`; }
+// uniform bidi-safe label: artist — title · mm:ss  (isolates dynamic parts)
+function card(tr) {
+  const m = cleanTrackMeta(tr);
+  const dur = tr.duration || fmtDur(tr.duration_ms) || '';
+  return `⁨${m.artist || '؟'}⁩ ⁨—⁩ ⁨${m.title || '؟'}⁩${dur ? ' · ⁨' + dur + '⁩' : ''}`;
+}
 function fmtDur(ms) { if (!ms) return ''; const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
 
 async function editOrReply(ctx, text, extra) {
@@ -56,11 +62,11 @@ panel.register('lang', async (ctx, p, lang) => {
 panel.register('results', async (ctx, params, lang) => {
   const { q, page = 1, items } = params;
   const rows = items.slice((page - 1) * SEARCH_PAGE, page * SEARCH_PAGE).map((tr) =>
-    [G(vtruncate(card(tr), 42) + ` · ${tr.duration || ''}`, 'pick:' + sidOf(tr))]);
+    [B(vtruncate(card(tr), 42), 'pick:' + sidOf(tr))]);
   const totalPages = Math.max(1, Math.ceil(items.length / SEARCH_PAGE));
   const nav = [];
   if (page > 1) nav.push(B('⬅️', `pg:${page - 1}`));
-  nav.push(B(`${num(lang, page)} / ${num(lang, totalPages)}`, 'noop'));
+  nav.push(B(`${num(lang, page)}/${num(lang, totalPages)}`, 'noop'));
   if (page < totalPages) nav.push(B('➡️', `pg:${page + 1}`));
   if (nav.length > 1 || totalPages > 1) rows.push(nav);
   rows.push([R(t(lang, 'back'), 'nav:menu')]);
@@ -69,10 +75,12 @@ panel.register('results', async (ctx, params, lang) => {
 
 panel.register('track', async (ctx, params, lang) => {
   const tr = await sc.track(params.sid);
+  const meta = cleanTrackMeta(tr);
   const date = tr.created_at ? dateFmt(lang, new Date(tr.created_at)) + '  •  ' + dateGreg(lang, new Date(tr.created_at)) : null;
   const lines = [
-    `🎵 <b>${esc(tr.title)}</b>`,
-    `👤 ${esc(tr.artist)}`,
+    `🎵 <b>${esc(meta.title)}</b>`,
+    `👤 ${esc(meta.artist)}`,
+    meta.version ? `🔁 ${esc(meta.version)}` : null,
     date ? `📅 ${iso(esc(date))}` : null,
     tr.duration || tr.duration_ms ? `⏱ ${esc(tr.duration || fmtDur(tr.duration_ms))}` : null,
     tr.genre ? `🏷 ${esc(tr.genre)}` : null,
@@ -204,8 +212,26 @@ async function doSearch(ctx, q) {
     }
   }
   if (!results.length) { await editOrReply(ctx, t(lang, 'no_results')); return; }
+  results = rankResults(q, results);
   store.incrStats('search');
   await panel.show(ctx, 'results', { q, page: 1, items: results }, { push: false });
+}
+
+// Rank results: playable (unencrypted mp3/progressive) first, then fuzzy relevance + popularity.
+function rankResults(q, items) {
+  const scored = items.map((tr) => {
+    const meta = cleanTrackMeta(tr);
+    const sim = Math.max(similarity(q, meta.title), similarity(q, `${meta.artist} ${meta.title}`), similarity(q, meta.artist));
+    let s = sim * 10;
+    if (sc.isPlayable(tr)) s += 6;                    // prefer actually-playable sources
+    if (meta.isRemix && !/remix|ریمیکس/i.test(q)) s -= 2;
+    const dur = tr.duration_ms || 0;
+    if (dur && (dur < 45000 || dur > 15 * 60 * 1000)) s -= 1;
+    s += Math.min(3, Math.log10((tr.plays || 0) + 1) / 2); // popularity, small weight
+    return { tr, s };
+  });
+  scored.sort((a, b) => b.s - a.s);
+  return scored.map((x) => x.tr);
 }
 
 const globalDl = { n: 0 }; const userDl = new Map();
@@ -223,10 +249,30 @@ async function runDownload(ctx, sid) {
     await downloadAndSend(ctx, tr, lang);
   } catch (e) {
     log.warn('dl fail', e.code);
+    // auto-alternate: if the source was encrypted/undecodable, try the next playable result.
+    if (e.code === 'ENCRYPTED' || /decod|encrypt|unusable|incomplete/.test(String(e.message))) {
+      const ok = await tryAlternate(ctx, sid, lang);
+      if (ok) return;
+    }
     const msg = e.code === 'NOT_DOWNLOADABLE' ? t(lang, 'error_not_downloadable')
       : (e.code === 'PAYLOAD_TOO_LARGE' || e.code === 'TRACK_TOO_LONG') ? t(lang, 'error_too_large') : t(lang, 'error_generic');
     await answer(ctx, msg, true);
   } finally { globalDl.n--; userDl.set(uid, Math.max(0, (userDl.get(uid) || 1) - 1)); }
+}
+
+// Try alternate playable results for the same artist/title.
+async function tryAlternate(ctx, failedSid, lang) {
+  try {
+    const failed = await sc.track(failedSid).catch(() => null);
+    if (!failed) return false;
+    const q = `${failed.artist} ${failed.title}`.trim();
+    const d = await sc.search(q, 1, lang);
+    const alts = (d.results || []).filter((r) => sc.isPlayable(r) && sc.sidOf(r) !== failedSid);
+    for (const alt of alts.slice(0, 4)) {
+      try { await downloadAndSend(ctx, alt, lang); return true; } catch (_) { continue; }
+    }
+  } catch (_) {}
+  return false;
 }
 
 async function doRecognize(ctx, fileRef) {

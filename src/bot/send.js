@@ -27,6 +27,15 @@ function ffprobeDuration(file) {
     });
   });
 }
+// True when the source is DRM/CENC encrypted or otherwise undecodable.
+function isEncryptedOrUndecodable(file) {
+  return new Promise((res) => {
+    execFile('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { timeout: 20000 }, (e, out, err) => {
+      const s = String(err || '') + String(out || '');
+      res(/encryption info|Incorrect number of samples|Invalid data found|moov atom not found/.test(s));
+    });
+  });
+}
 async function toMp3(src, dst) {
   await runFfmpeg(['-v', 'error', '-y', '-i', src, '-vn', '-acodec', 'libmp3lame', '-b:a', '128k', '-ar', '44100', '-ac', '2', dst], 150000);
   if (!fs.existsSync(dst) || fs.statSync(dst).size < 40 * 1024) throw new Error('transcode produced unusable audio');
@@ -71,6 +80,8 @@ async function downloadAndSend(ctx, tr, lang) {
     if (st.size < 1024 || st.size > MAX_BYTES) throw new Error('invalid audio payload');
     const prefix = fs.readFileSync(raw, { encoding: 'utf8', flag: 'r' }).slice(0, 256);
     if (prefix.trimStart().startsWith('{') || /^#EXTM3U/i.test(prefix)) throw new Error('audio endpoint returned manifest/JSON');
+    // DRM/CENC or undecodable source -> reject so caller picks another result.
+    if (await isEncryptedOrUndecodable(raw)) { const e = new Error('source is encrypted or undecodable'); e.code = 'ENCRYPTED'; throw e; }
 
     let file = raw, ext = '.m4a', sendDuration = metaDuration;
     if (await hasFfmpeg()) {
