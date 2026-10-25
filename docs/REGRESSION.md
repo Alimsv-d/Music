@@ -96,3 +96,41 @@ Channel post includes cover, clean caption, buttons, and 30-second audio demo se
 - Worker repo before cPanel-app branch: 53 Vitest + 19 E2E passing; lint and secret scan passing.
 - Live synthetic webhook: /start, text, selected audio, lyrics, Instagram tracker URL, inline query, /admin, /diag all returned 200.
 - `/health`: `ok:true`, RSS ~79MB after restart.
+
+## Round 3 — R1..R5
+
+### R1 inline ❗ → verified root cause + fix
+- Root cause: `PUBLIC_URL` was `https://DevCoder.ir/music` but the cPanel Passenger app mounts at domain root. Inline `audio_url`/`video_url` pointed at `/m/...` under `/music` → 404. Reproduced: `HEAD /music/m/<token>.mp3` → 404; `/m/<token>.mp3` → 200. ✅
+- Fix: `config.publicUrl` now derives the origin (or `PUBLIC_BASE_URL` when mounted under a path), so generated inline URLs always hit the live mount. ✅
+- Second root cause: proxy used to forward to SoundCloud `/stream`, which returns HLS manifest/413 for some tracks → Telegram got invalid content. Now the proxy serves **validated local files** from `mediaCache` (LRU disk cache, TTL, size cap), with proper HEAD/GET/Range(206)/Content-Length/Accept-Ranges/Content-Disposition. Verified: HEAD 200, GET 200, Range 206. ✅
+- Cache-eviction race found: LRU evicted the hot file between HEAD and GET because reads never refreshed mtime → updated mtime on every `cached()` hit. ✅
+- Stale-production-app issue: `touch tmp/restart.txt` reload required before the proxy would serve cache hits (Passenger holds the process). ✅
+
+### R2 12-second silent audio → verified root cause + fix
+- Root cause (forensics): tracks with `hasMp3:false && hasProgressive:false && hasHls:true` are **DRM/CENC-encrypted AAC** (`Incorrect number of samples in encryption info`). ffprobe/ffmpeg cannot decode past the init segment → Telegram showed a short silent file while the duration label came from metadata. Reproduced on `Reza Bahram - Yar` (sid 2231629814): via stream, encrypted:true, valid:false. ✅
+- Fix: `isPlayable()` prefers real mp3/progressive; `isEncryptedOrUndecodable()` (ffprobe signal) rejects encrypted/undecodable; RMS checks at 3 points reject silent audio; duration must match metadata ±3s; `tryAlternate()` auto-selects the next *playable* result for the same artist/title. ✅
+- Verified playable alternates: `Cancel Majid Kharatha` → 221s valid; `Short MP3 progressive` → 175s valid; `Long HLS 619s` → HLS stitched 619s valid (7.5MB). ✅
+- Stale `file_id` cache: migrated + versioned (`audio-v3-validated-rms`); only validated file_ids are reused/cached. ✅
+
+### R3 wrong artist metadata + messy labels
+- New `src/services/trackMeta.js` `cleanTrackMeta(raw)` returns `{artist,title,version,isRemix,confidence}`: prefers publisher metadata → `A - B` pattern (artist/title order, alias-index tie-break) → `X by Y`/`از` → `feat.` → alias index → uploader (low-confidence fallback). Strips noise (mp3/kbps/official/audio/lyrics/Persian fillers) and extracts version (ریمیکس شاد/remix/live/etc). Handles Persian word boundaries (\b fails on RTL). ✅
+- Uniform labels via `card()` = `⁨artist⁩ ⁨—⁩ ⁨title⁩ · ⁨mm:ss⁩` with bidi isolates; Persian RTL-safe. ✅
+
+### R4 text/lyrics search failed → search engine
+- `src/services/searchEngine.js`: intent analysis (short name / artist+song / lyric-line / too-long), variant fan-out (normalized, stopword-stripped, alias, transliterated — parallel, cap 3), merge/dedupe by sid, hybrid ranking (similarity + playable bonus + popularity + remix/duration penalties).
+- Lyrics path: Shazam `POST /api/v1/search` with `lyrics:true` → mapped to SoundCloud for the file.
+- Explicit empty vs service-error distinction: errors → "⚠️ سرویس موقتاً در دسترس نیست" (retry/cache), empty → "چیزی پیدا نشد" (lyrics → offer voice recognition). ✅
+- Learning: `search_learning` map (normalized query → chosen track) boosts repeat accuracy. ✅
+
+### R5 buttons/UI
+- Green `G` only for primary actions (download/confirm/add); blue `B` for navigation/selection; red `R` for back/close/delete. Removed unsupported `style` field (Telegram core docs don't expose it) — semantic color helpers retained as emoji. ✅
+- Pagination `⬅️ | ۱/۴ | ➡️` single blue row; back `↩️ بازگشت`; confidence `🎯 اطمینان: n٪`; captions use cleaned meta (artist not uploader). ✅
+
+### Inline media cache (B3/B4/B5 follow-through)
+- `src/services/mediaCache.js`: bounded disk LRU (TTL + size cap), per-key locks, worker-pool cap (3), validates via `buildValidatedAudio` (download → ffprobe+duration+RMS → mp3), serves via `/m/` `/v/` signed proxies. Warm-ahead on every search result set (top 3). ✅
+- Inline Instagram: `InlineQueryResultVideo` uses locally-prepared mp4 (faststart) + real thumbnail + music callback; photo items use `InlineQueryResultPhoto`. ✅
+
+## Verified live on host (this round)
+- `/start` fresh menu, search → results, `pick:` → direct audio, insta link → media+buttons, `/diag` group, `/admin` dashboard, lyrics-text trigger — all HTTP 200.
+- Signed `/m/` proxy: HEAD 200, GET 200 (476935B mp3), Range 206 (1001B) — all real Telegram-fetchable.
+- npm test: 18/18 pass. `npm audit --omit=dev`: 0 vulns.
