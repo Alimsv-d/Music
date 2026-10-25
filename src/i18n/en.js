@@ -12,6 +12,7 @@ module.exports = {
     track_page: '🎵 <b>{title}</b>\n👤 {artist}\n📅 {date}\n⏱ {duration}\n🏷 {genre}\n🎧 {plays}', no_lyrics: 'No lyrics found.', recognize_result: '🎤 <b>{title}</b>\n👤 {artist}\n💿 {album}\n📅 {year}\n🎯 Confidence: {conf}%', recognize_none: '❌ No song recognized. Try clearer audio.', recognize_badformat: '⚠️ Unsupported format. Please send voice, MP3 or WAV.', insta_result: '📸 <b>{type}</b>\n👤 {author}\n📝 {caption}', ig_recognize: 'Recognize & download song',
     ig_search_sc: 'Search on SoundCloud',
     ig_music: '🎵 Download music',
+    sent_pm: 'Sent to your DM with the bot',
     ig_no_music: '🎵 Tap below to search & get the song.',
     insta_pick: 'Choose an item/quality:', insta_none: '❌ No public media found for this link.', lang_title: '🌐 Choose your language:', lang_set: '✅ Language changed to {lang}.',
     help_text: '<b>Music</b> — music bot\n\n🔍 Search and download tracks\n🎤 Recognize songs from audio\n📸 Download public Instagram media\n🔥 Discover recent tracks\n\nIn groups, use a command or a song trigger.', about_text: '<b>Music</b>\nCreated by: {owner} ({user})\nSupport: {user}', support_ask: '📞 Write your message to support:', support_sent: '✅ Your message was sent. Ticket #{n}', support_reply: '📩 Support reply:\n\n{text}', support_owner_new: '🎫 Ticket #{n} from {name} (<code>{id}</code>):\n\n{text}', btn_reply: '🟢 Reply', new_title: '🔥 New releases',

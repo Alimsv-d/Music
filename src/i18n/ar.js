@@ -8,6 +8,7 @@ module.exports = {
     results_title: 'نتائج «{q}»', page_of: '{a}/{b}', prev: '⬅️', next: '➡️', dl: '🟢 تنزيل', lyrics: '🔵 كلمات الأغنية', link: '🔗 الرابط', similar: '🔵 مشابه', fav_add: '⭐ أضف إلى المفضلة', fav_del: '⭐ إزالة من المفضلة', favorites_title: '⭐ المفضلة', favorites_empty: 'لا توجد مفضلات بعد.', history_title: '🕘 السجل الأخير', history_empty: 'السجل فارغ.', track_page: '🎵 <b>{title}</b>\n👤 {artist}\n📅 {date}\n⏱ {duration}\n🏷 {genre}\n🎧 {plays}', no_lyrics: 'لم يتم العثور على كلمات.', recognize_result: '🎤 <b>{title}</b>\n👤 {artist}\n💿 {album}\n📅 {year}\n🎯 الثقة: {conf}%', recognize_none: '❌ لم يتم التعرّف على الأغنية.', recognize_badformat: '⚠️ تنسيق غير مدعوم. أرسل صوتاً أو MP3 أو WAV.', insta_result: '📸 <b>{type}</b>\n👤 {author}\n📝 {caption}', ig_recognize: 'التعرف على الأغنية وتنزيلها',
     ig_search_sc: 'البحث في SoundCloud',
     ig_music: '🎵 تنزيل الموسيقى',
+    sent_pm: 'أُرسل إلى رسائلك الخاصة',
     ig_no_music: '🎵 اضغط للبحث عن الأغنية وتنزيلها.',
     insta_pick: 'اختر الجودة أو العنصر:', insta_none: '❌ لم يتم العثور على محتوى عام.', lang_title: '🌐 اختر اللغة:', lang_set: '✅ تم تغيير اللغة إلى {lang}.',
     help_text: '<b>Music</b> — روبوت الموسيقى\nابحث عن الأغاني، تعرّف على الصوت ونزّل الوسائط العامة من إنستغرام.', about_text: '<b>Music</b>\nالمنشئ: {owner} ({user})\nالدعم: {user}', support_ask: '📞 اكتب رسالتك للدعم:', support_sent: '✅ تم إرسال رسالتك. التذكرة #{n}', support_reply: '📩 رد الدعم:\n\n{text}', support_owner_new: '🎫 تذكرة #{n} من {name} (<code>{id}</code>):\n\n{text}', btn_reply: '🟢 رد', new_title: '🔥 الأحدث',

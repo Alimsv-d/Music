@@ -89,13 +89,13 @@ async function sendPost(api, chId, tr, lang = 'fa', opts = {}) {
   } else {
     msg = await api.sendMessage(chId, caption, { ...base, disable_web_page_preview: true });
   }
-  // demo: try to send a short audio clip replying to the post
+  // demo voice note: short mp3 clip sent as a voice reply to the post
   try {
     const demo = await makeDemo(tr);
     if (demo) {
       const { InputFile } = require('grammy');
-      await api.sendAudio(chId, new InputFile(demo.path, `${tr.artist} - ${tr.title} (demo)`.slice(0, 60) + '.mp3'), {
-        title: tr.title, performer: tr.artist, duration: Math.min(30, Math.round((tr.duration_ms || 0) / 1000) || 30),
+      await api.sendVoice(chId, new InputFile(demo.path, `${tr.artist} - ${tr.title}`.slice(0, 60) + '.mp3'), {
+        duration: Math.min(30, Math.round((tr.duration_ms || 0) / 1000) || 30),
         reply_to_message_id: msg.message_id, ...(opts.silent ? { disable_notification: true } : {}),
       });
     }

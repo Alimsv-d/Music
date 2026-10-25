@@ -11,6 +11,13 @@ class ServiceError extends Error {
 
 const INSTA_RE = /(?:https?:\/\/)?(?:www\.)?instagram\.com\/(p|reel|reels|tv|stories)\/([A-Za-z0-9_.-]+)(?:\/([A-Za-z0-9_-]+))?/i;
 function isInstaUrl(s) { return INSTA_RE.test(s || ''); }
+// Strip tracker params (?igsh, ?dlrf, ?utm_*) — they break upstream resolution.
+function cleanUrl(s) {
+  const m = String(s || '').match(INSTA_RE);
+  if (!m) return s;
+  const path = m[0].replace(/^https?:\/\//i, '').replace(/^www\./i, '');
+  return 'https://www.instagram.com/' + path.replace(/\/+$/, '') + '/';
+}
 
 async function resolve(url) {
   const d = await getJson(base() + '/api/v1/resolve?' + new URLSearchParams({ url }), { timeout: 20000, retries: 2 });
@@ -36,4 +43,4 @@ async function health() {
   try { const d = await getJson(base() + '/health', { timeout: 8000, retries: 1 }); return { ok: !!d.ok, ms: Date.now() - t0 }; }
   catch (e) { return { ok: false, ms: Date.now() - t0, error: e.code || e.message }; }
 }
-module.exports = { isInstaUrl, resolve, downloadUrlFor, thumbUrl, downloadFile, health, ServiceError, INSTA_RE };
+module.exports = { isInstaUrl, cleanUrl, resolve, downloadUrlFor, thumbUrl, downloadFile, health, ServiceError, INSTA_RE };

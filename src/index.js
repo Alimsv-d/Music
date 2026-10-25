@@ -12,6 +12,7 @@ const H = require('./bot/handlers');
 const channel = require('./bot/channel');
 require('./bot/admin');
 const sc = require('./services/soundcloud');
+const sh = require('./services/shazam');
 const ig = require('./services/instagram');
 const { normalize, isSoundCloudUrl, similarity } = require('./services/query');
 const { downloadFile } = require('./bot/send');
@@ -96,6 +97,28 @@ bot.command('recognize', async (ctx) => {
   else await ctx.reply(t(ctx.lang, 'ask_voice'));
 });
 bot.command('help', async (ctx) => panel.show(ctx, 'help', {}, { push: false }));
+bot.command('admin', async (ctx) => {
+  if (!isOwner(ctx.from.id) || ctx.chat.type !== 'private') return;
+  await panel.show(ctx, 'admin', {}, { push: false });
+});
+bot.command('diag', async (ctx) => {
+  if (ctx.chat.type === 'private') return;
+  if (!(await isGroupAdmin(ctx))) return;
+  const me = await bot.api.getMe().catch(() => null);
+  let member = null;
+  try { member = await bot.api.getChatMember(ctx.chat.id, me.id); } catch (_) {}
+  const gs = chatSettings(ctx.chat.id);
+  const isAdmin = member && ['administrator', 'creator'].includes(member.status);
+  const lines = [
+    `🩺 <b>تشخیص گروه</b>`,
+    `🤖 وضعیت ربات: ${member ? member.status : 'نامشخص'}`,
+    `👁 دیدن پیام‌ها: ${isAdmin ? 'همه (ادمین)' : 'فقط فرمان/منشن/ریپلای — برای دیدن همه، ادمین کن یا /setprivacy را خاموش کن'}`,
+    `🧠 تشخیص هوشمند: ${gs.smart !== false ? 'روشن' : 'خاموش'}`,
+    `💬 نوع چت: ${ctx.chat.type}${ctx.message && ctx.message.message_thread_id ? ' · topic ' + ctx.message.message_thread_id : ''}`,
+    `✉️ دسترسی ارسال: ${member && member.status !== 'kicked' && member.status !== 'left' ? '✅' : '❌'}`,
+  ];
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+});
 bot.command('settings', async (ctx) => {
   if (ctx.chat.type === 'private') return;
   if (!(await isGroupAdmin(ctx))) return;
@@ -169,17 +192,19 @@ bot.on('message', async (ctx) => {
 
   if (!text) return;
 
-  // INSTAGRAM link
+  // INSTAGRAM link — auto resolve + download media + music button
   if (ig.isInstaUrl(text)) {
-    if (ctx.chat.type === 'private' || (await isReplyToBot(ctx, msg))) return H.doInsta(ctx, text);
+    const addressed = ctx.chat.type === 'private' || (await isReplyToBot(ctx, msg));
+    if (addressed) return H.doInsta(ctx, ig.cleanUrl(text));
     return;
   }
-  // SOUNDCLOUD link
+  // SOUNDCLOUD link -> direct download of the resolved track
   if (isSoundCloudUrl(text)) {
-    if (ctx.chat.type === 'private' || (await isReplyToBot(ctx, msg))) {
+    const addressed = ctx.chat.type === 'private' || (await isReplyToBot(ctx, msg));
+    if (addressed) {
       try {
         const tr = await sc.resolveUrl(text);
-        return panel.show(ctx, 'track', { sid: sc.sidOf(tr) });
+        return H.runDownload(ctx, sc.sidOf(tr));
       } catch (_) { return ctx.reply(t(lang, 'error_generic')); }
     }
     return;
@@ -407,6 +432,7 @@ bot.on('callback_query', async (ctx) => {
     if (data.startsWith('rdl:')) return H.recogDownload(ctx, data.slice(4));
     if (data.startsWith('igm:')) return H.instaMusic(ctx, data.slice(4));
     if (data === 'igx') return H.instaRecognize(ctx);
+    if (data.startsWith('igi:')) return inlineInstaMusic(ctx, data.slice(4));
     // ----- admin -----
     if (data === 'a:panel') { await answer(); return panel.show(ctx, 'admin'); }
     if (data === 'a:stats') { await answer(); return panel.show(ctx, 'admin_stats'); }
@@ -514,6 +540,39 @@ async function showNew(ctx) {
     const items = (d.results || []).slice(0, 16);
     await panel.show(ctx, 'results', { q: t(ctx.lang, 'new_title'), page: 1, items }, { push: false });
   } catch (_) { await ctx.reply(t(ctx.lang, 'error_service')); }
+}
+
+// inline instagram music button: resolve -> recognize -> send music to user's PM
+async function inlineInstaMusic(ctx, b64) {
+  const lang = ctx.lang, uid = ctx.from.id;
+  const url = Buffer.from(b64, 'base64url').toString();
+  try { await ctx.answerCallbackQuery({ text: t(lang, 'recognizing') }); } catch (_) {}
+  // Need the user's private chat to send the file. If they never started the bot, deep-link.
+  try {
+    const d = await ig.resolve(ig.cleanUrl(url));
+    const item = (d.items || []).find((i) => i.type === 'video');
+    if (!item) { await ctx.answerCallbackQuery({ text: t(lang, 'recognize_none'), show_alert: true }); return; }
+    const path = require('node:path'), fs = require('node:fs');
+    const tmp = path.join(config.tmpDir, `igv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+    const v = item.variants && item.variants[0];
+    await ig.downloadFile(d.source_url, { quality: v && v.quality, index: item.index }, tmp, 80 * 1024 * 1024);
+    const { decodeWithFfmpeg } = require('./bot/audio');
+    const pcm = await decodeWithFfmpeg(fs.readFileSync(tmp), 'mp4');
+    try { fs.unlinkSync(tmp); } catch (_) {}
+    const rec = await sh.recognizeBySignature(pcm, { lyrics: false });
+    if (!rec || !rec.found) { await ctx.api.sendMessage(uid, t(lang, 'recognize_none')); return; }
+    // find downloadable soundcloud match and send
+    const q = `${rec.artist || ''} ${rec.title || ''}`.trim();
+    const s = await sc.search(q, 1, lang);
+    const tr = s.results && s.results[0];
+    if (!tr) { await ctx.api.sendMessage(uid, t(lang, 'no_results')); return; }
+    await H.runDownload({ ...ctx, chat: { id: uid, type: 'private' }, from: ctx.from, lang }, sc.sidOf(tr));
+    await ctx.answerCallbackQuery({ text: '🎧 ' + t(lang, 'sent_pm') }).catch(() => {});
+  } catch (e) {
+    log.warn('inline insta music', e.code || e.message);
+    // fallback: deep-link so user starts bot then gets the song
+    try { await ctx.answerCallbackQuery({ url: `https://t.me/${config.botUsername}?start=ig_${Buffer.from((e.q || '')).toString('base64url')}` }); } catch (_) {}
+  }
 }
 
 // ---------- inline mode: real audio/video results via signed proxy ----------

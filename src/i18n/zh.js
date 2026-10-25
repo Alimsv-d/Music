@@ -8,6 +8,7 @@ module.exports = {
     results_title: '“{q}”的搜索结果', page_of: '{a}/{b}', prev: '⬅️', next: '➡️', dl: '🟢 下载', lyrics: '🔵 歌词', link: '🔗 链接', similar: '🔵 相似歌曲', fav_add: '⭐ 添加收藏', fav_del: '⭐ 取消收藏', favorites_title: '⭐ 我的收藏', favorites_empty: '暂无收藏。', history_title: '🕘 最近记录', history_empty: '暂无历史记录。', track_page: '🎵 <b>{title}</b>\n👤 {artist}\n📅 {date}\n⏱ {duration}\n🏷 {genre}\n🎧 {plays}', no_lyrics: '未找到歌词。', recognize_result: '🎤 <b>{title}</b>\n👤 {artist}\n💿 {album}\n📅 {year}\n🎯 置信度：{conf}%', recognize_none: '❌ 未能识别歌曲，请发送更清晰的音频。', recognize_badformat: '⚠️ 不支持此格式，请发送语音、MP3 或 WAV。', insta_result: '📸 <b>{type}</b>\n👤 {author}\n📝 {caption}', ig_recognize: '识别并下载歌曲',
     ig_search_sc: '在 SoundCloud 搜索',
     ig_music: '🎵 下载音乐',
+    sent_pm: '已发送到你的私信',
     ig_no_music: '🎵 点击下方搜索并获取歌曲。',
     insta_pick: '请选择项目或画质：', insta_none: '❌ 未找到公开内容。', lang_title: '🌐 请选择语言：', lang_set: '✅ 语言已更改为 {lang}。',
     help_text: '<b>Music</b> 音乐机器人\n搜索和下载音乐、识别音频、下载公开 Instagram 媒体。', about_text: '<b>Music</b>\n创建者：{owner} ({user})\n支持：{user}', support_ask: '📞 请写下你的支持请求：', support_sent: '✅ 消息已发送，工单 #{n}', support_reply: '📩 支持回复：\n\n{text}', support_owner_new: '🎫 工单 #{n}，来自 {name} (<code>{id}</code>)：\n\n{text}', btn_reply: '🟢 回复', new_title: '🔥 最新音乐',

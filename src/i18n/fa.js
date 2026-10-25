@@ -62,6 +62,7 @@ module.exports = {
     insta_result: '📸 <b>{type}</b>\n👤 {author}\n📝 {caption}',
     insta_pick: 'کیفیت/آیتم را انتخاب کن:',
     ig_music: '🎵 دانلود موزیک',
+    sent_pm: 'در پیوی ربات ارسال شد',
     ig_no_music: '🎵 برای موزیک، روی دکمه‌ی زیر بزن تا جستجو کنم.',
     ig_recognize: 'شناسایی و دانلود آهنگ',
     ig_search_sc: 'جستجو در ساندکلود',
