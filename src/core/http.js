@@ -118,9 +118,27 @@ async function postJson(url, obj, opts = {}) {
 async function downloadTo(url, filePath, opts = {}) {
   const fs = require('node:fs');
   const ws = fs.createWriteStream(filePath);
-  const res = await request(url, { ...opts, stream: ws, retries: opts.retries ?? 1 });
-  if (res.status >= 400) throw new HttpError(`HTTP ${res.status}`, { status: res.status, code: 'HTTP_' + res.status });
-  return res;
+  try {
+    const res = await request(url, { ...opts, stream: ws, retries: opts.retries ?? 1 });
+    // request() resolves on response end, but the file stream may still have
+    // buffered writes. Wait for the actual finish before stat/read/rename.
+    await new Promise((resolve, reject) => {
+      if (ws.writableFinished) return resolve();
+      ws.once('finish', resolve);
+      ws.once('error', reject);
+      ws.once('close', () => ws.writableFinished ? resolve() : reject(new HttpError('file stream closed early', { code: 'SHORT_WRITE' })));
+    });
+    if (res.status >= 400) throw new HttpError(`HTTP ${res.status}`, { status: res.status, code: 'HTTP_' + res.status });
+    const ct = String(res.headers['content-type'] || '').toLowerCase();
+    if (ct.includes('application/json') || ct.includes('mpegurl') || ct.includes('text/plain')) {
+      throw new HttpError('download endpoint returned manifest/json, not media', { code: 'NOT_MEDIA', status: res.status });
+    }
+    return res;
+  } catch (e) {
+    try { ws.destroy(); } catch (_) {}
+    try { fs.unlinkSync(filePath); } catch (_) {}
+    throw e;
+  }
 }
 
 module.exports = { request, getJson, postJson, downloadTo, HttpError, sleep, validatePublicServiceUrl };

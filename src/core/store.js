@@ -29,6 +29,16 @@ class Store {
       } catch (_) { this.db = null; }
     }
     if (!this.db) this._initJson();
+    this._migrateCaches();
+  }
+
+  _migrateCaches() {
+    const current = this.get('settings', 'file_cache_version');
+    const wanted = 'audio-v3-validated-rms';
+    if (current === wanted) return;
+    // Invalidate every old file_id: old pipeline could cache a short/invalid file.
+    for (const k of this.keys('file_id_cache')) this.del('file_id_cache', k);
+    this.set('settings', 'file_cache_version', wanted);
   }
 
   _initSqlite() {

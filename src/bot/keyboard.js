@@ -1,13 +1,13 @@
 'use strict';
-// Inline keyboard builder with color hints (Bot API `style` when available).
-function btn(text, callback_data, style) {
-  const b = { text, callback_data };
-  if (style) b.style = style; // 'success' | 'primary' | 'danger' (recent Bot API)
-  return b;
+// Telegram's documented InlineKeyboardButton schema does not include a stable
+// style/color field. Keep semantic helpers, but emit only supported fields;
+// callers provide the visible color emoji in localized labels when desired.
+function btn(text, callback_data) {
+  return { text, callback_data };
 }
-const G = (t, c) => btn(t, c, 'success');
-const B = (t, c) => btn(t, c, 'primary');
-const R = (t, c) => btn(t, c, 'danger');
+const G = (t, c) => btn(t, c);
+const B = (t, c) => btn(t, c);
+const R = (t, c) => btn(t, c);
 const URLB = (t, url) => ({ text: t, url });
 
 function kb(rows) { return { inline_keyboard: rows.filter((r) => r && r.length) }; }

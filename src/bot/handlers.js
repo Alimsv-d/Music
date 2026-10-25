@@ -12,6 +12,8 @@ const sh = require('../services/shazam');
 const ig = require('../services/instagram');
 const { normalize, transliterate, aliasFor, isSoundCloudUrl, similarity } = require('../services/query');
 const { cleanTrackMeta } = require('../services/trackMeta');
+const searchEngine = require('../services/searchEngine');
+const mediaCache = require('../services/mediaCache');
 const { downloadAndSend } = require('./send');
 const { processAudio } = require('./audio');
 
@@ -62,7 +64,7 @@ panel.register('lang', async (ctx, p, lang) => {
 panel.register('results', async (ctx, params, lang) => {
   const { q, page = 1, items } = params;
   const rows = items.slice((page - 1) * SEARCH_PAGE, page * SEARCH_PAGE).map((tr) =>
-    [B(vtruncate(card(tr), 42), 'pick:' + sidOf(tr))]);
+    [B(vtruncate(card(tr), 52), 'pick:' + sidOf(tr))]);
   const totalPages = Math.max(1, Math.ceil(items.length / SEARCH_PAGE));
   const nav = [];
   if (page > 1) nav.push(B('⬅️', `pg:${page - 1}`));
@@ -202,19 +204,35 @@ async function doSearch(ctx, q) {
   if (!featureOn('search')) return editOrReply(ctx, t(lang, 'error_service'));
   const w = rl.check(ctx.from.id, 'search');
   if (w) { await editOrReply(ctx, t(lang, 'rate_limited', { wait: rl.fmtWait(w, lang, t) })); return; }
-  let results;
-  try { const d = await sc.search(q, 1, lang); results = d.results || []; }
-  catch (e) { log.warn('search fail', e.code); return editOrReply(ctx, t(lang, 'error_service')); }
-  if (!results.length) {
-    const al = aliasFor(q), tr = transliterate(normalize(q));
-    for (const alt of [al, tr]) {
-      if (alt && alt !== q) { try { const d = await sc.search(alt, 1, lang); if (d.results && d.results.length) { results = d.results; break; } } catch (_) {} }
-    }
+  const result = await searchEngine.search(q, lang);
+  if (result.kind === 'invalid') return editOrReply(ctx, 'لطفاً نام آهنگ یا یک خط کوتاه از ترانه را بفرست.');
+  if (result.kind === 'error') return editOrReply(ctx, '⚠️ سرویس جستجو موقتاً در دسترس نیست؛ چند لحظه بعد دوباره تلاش کن.');
+  if (!result.items || !result.items.length) {
+    if (result.query.lyric) return editOrReply(ctx, 'از روی این خط ترانه نتونستم آهنگ رو پیدا کنم؛ ویس یا ویدیوی آهنگ رو بفرست تا شناسایی کنم 🎤');
+    return editOrReply(ctx, t(lang, 'no_results'));
   }
-  if (!results.length) { await editOrReply(ctx, t(lang, 'no_results')); return; }
-  results = rankResults(q, results);
+  let items = result.items.map((x) => ({ ...x.tr, _score: x.score }));
+  // Warm the best few validated audio files for upcoming inline queries.
+  for (const tr of items.slice(0, 3)) mediaCache.warmAudio(tr).catch((e) => log.debug('inline warm failed', { sid: sc.sidOf(tr), code: e.code || 'warm' }));
+  // learned manual/previous picks get a small ranking boost
+  const learning = store.get('settings', 'search_learning') || {};
+  const learned = learning[normalize(q)];
+  if (learned && learned.sid) items.sort((a,b) => (sc.sidOf(a) === learned.sid ? -1 : 0) - (sc.sidOf(b) === learned.sid ? -1 : 0));
   store.incrStats('search');
-  await panel.show(ctx, 'results', { q, page: 1, items: results }, { push: false });
+  if (items[0]._score >= 0.86 && sc.isPlayable(items[0])) {
+    store.set('settings', 'search_learning', learnPick(learning, normalize(q), items[0]));
+    return runDownload(ctx, sc.sidOf(items[0]));
+  }
+  await panel.show(ctx, 'results', { q, page: 1, items: items.slice(0, 15) }, { push: false });
+}
+
+function learnPick(map, q, tr) {
+  const m = { ...map };
+  const sid = sc.sidOf(tr);
+  m[q] = { sid, artist: tr.artist, title: tr.title, count: ((m[q] && m[q].count) || 0) + 1, at: Date.now() };
+  const keys = Object.keys(m);
+  if (keys.length > 2000) delete m[keys[0]];
+  return m;
 }
 
 // Rank results: playable (unencrypted mp3/progressive) first, then fuzzy relevance + popularity.
@@ -250,7 +268,7 @@ async function runDownload(ctx, sid) {
   } catch (e) {
     log.warn('dl fail', e.code);
     // auto-alternate: if the source was encrypted/undecodable, try the next playable result.
-    if (e.code === 'ENCRYPTED' || /decod|encrypt|unusable|incomplete/.test(String(e.message))) {
+    if (['ENCRYPTED', 'DURATION_MISMATCH', 'SILENT_AUDIO', 'PAYLOAD_TOO_LARGE'].includes(e.code) || /decod|encrypt|unusable|incomplete|silent|duration mismatch/.test(String(e.message))) {
       const ok = await tryAlternate(ctx, sid, lang);
       if (ok) return;
     }
@@ -265,9 +283,11 @@ async function tryAlternate(ctx, failedSid, lang) {
   try {
     const failed = await sc.track(failedSid).catch(() => null);
     if (!failed) return false;
-    const q = `${failed.artist} ${failed.title}`.trim();
+    const failedMeta = cleanTrackMeta(failed);
+    const q = `${failedMeta.artist} ${failedMeta.title}`.trim();
     const d = await sc.search(q, 1, lang);
-    const alts = (d.results || []).filter((r) => sc.isPlayable(r) && sc.sidOf(r) !== failedSid);
+    const alts = (d.results || []).filter((r) => sc.isPlayable(r) && sc.sidOf(r) !== failedSid)
+      .filter((r) => similarity(q, `${cleanTrackMeta(r).artist} ${cleanTrackMeta(r).title}`) >= 0.82);
     for (const alt of alts.slice(0, 4)) {
       try { await downloadAndSend(ctx, alt, lang); return true; } catch (_) { continue; }
     }

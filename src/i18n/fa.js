@@ -17,7 +17,7 @@ module.exports = {
     menu_admin: '🛠 مدیریت',
     menu_addgroup: '➕ افزودن به گروه',
     menu_channel: '📢 کانال اصلی',
-    back: '↩️ بازگشت',
+    back: '🔴 بازگشت',
     confidence: '🎯 اطمینان: {n}٪',
     close: '🔴 بستن',
     cancel: '🔴 انصراف',
@@ -128,6 +128,7 @@ module.exports = {
     disabled: 'غیرفعال',
     minutes_n: { other: '{n} دقیقه' },
     // inline
+    inline_hint: '@{bot} را با یک عبارت جستجو کن',
     inline_title: '{artist} — {title}',
     inline_open: 'باز کردن در ربات',
     start_deeplink: 'در حال بارگذاری آهنگ…',

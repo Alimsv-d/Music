@@ -28,7 +28,10 @@ const config = {
   ownerUsername: process.env.OWNER_USERNAME || 'AliMsvD',
   ownerName: process.env.OWNER_NAME || 'Ali Mousavi',
   channel: process.env.CHANNEL || '@MusicMsvD',
-  publicUrl: (process.env.PUBLIC_URL || '').replace(/\/$/, ''),
+  // cPanel's Passenger mount is the domain root. PUBLIC_URL may contain the
+  // old /music alias; use an explicit PUBLIC_BASE_URL only when truly mounted
+  // below a path. This keeps webhook, inline media and /health paths consistent.
+  publicUrl: (process.env.PUBLIC_BASE_URL || (() => { try { return new URL(process.env.PUBLIC_URL || '').origin; } catch (_) { return ''; } })()).replace(/\/$/, ''),
   allowChannelTest: process.env.ALLOW_CHANNEL_TEST === '1',
   scApi: (process.env.SOUNDCLOUD_API_URL || '').replace(/\/$/, ''),
   shazamApi: (process.env.SHAZAM_API_URL || '').replace(/\/$/, ''),
