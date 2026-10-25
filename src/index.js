@@ -32,6 +32,11 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
+function featureOn(name) {
+  const s = store.get('settings', 'features') || {};
+  return s[name] !== false;
+}
+
 // force-join check (multi-channel). Returns true if member of ALL required channels.
 async function checkForceJoin(ctx) {
   const s = store.get('settings', 'global') || {};
@@ -442,6 +447,15 @@ bot.on('callback_query', async (ctx) => {
     if (data === 'a:set') { await answer(); return panel.show(ctx, 'admin_settings'); }
     if (data === 'a:langs') { await answer(); return panel.show(ctx, 'admin_langs'); }
     if (data === 'a:tickets') { await answer(); return panel.show(ctx, 'admin_tickets'); }
+    if (data === 'a:features') { await answer(); return panel.show(ctx, 'admin_features'); }
+    if (data.startsWith('feat:')) {
+      const key = data.slice(5);
+      const s = store.get('settings', 'features') || {};
+      s[key] = !(s[key] !== false);
+      store.set('settings', 'features', s);
+      await answer(s[key] ? '✅' : '❌');
+      return panel.show(ctx, 'admin_features', {}, { push: false });
+    }
     if (data === 'a:bc') { await answer(); H.setAwait(uid, { type: 'broadcast' }); return editPanel(ctx, t(lang, 'broadcast_ask'), [[R(t(lang, 'cancel'), 'a:panel')]]); }
     if (data === 'a:banask') { await answer(); H.setAwait(uid, { type: 'ban' }); return editPanel(ctx, t(lang, 'ban_ask'), [[R(t(lang, 'cancel'), 'a:bans')]]); }
     if (data === 'ach:add') { await answer(); H.setAwait(uid, { type: 'addchannel' }); return editPanel(ctx, t(lang, 'channel_add_ask'), [[R(t(lang, 'cancel'), 'a:chans')]]); }

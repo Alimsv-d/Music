@@ -183,9 +183,15 @@ function pushHistory(uid, tr) {
   store.set('history', String(uid), l.slice(-50));
 }
 
+function featureOn(name) {
+  const s = store.get('settings', 'features') || {};
+  return s[name] !== false;
+}
+
 // ============ FLOWS ============
 async function doSearch(ctx, q) {
   const lang = ctx.lang;
+  if (!featureOn('search')) return editOrReply(ctx, t(lang, 'error_service'));
   const w = rl.check(ctx.from.id, 'search');
   if (w) { await editOrReply(ctx, t(lang, 'rate_limited', { wait: rl.fmtWait(w, lang, t) })); return; }
   let results;
@@ -225,6 +231,7 @@ async function runDownload(ctx, sid) {
 
 async function doRecognize(ctx, fileRef) {
   const lang = ctx.lang;
+  if (!featureOn('recog')) return editOrReply(ctx, t(lang, 'error_service'));
   const w = rl.check(ctx.from.id, 'recognize');
   if (w) { await editOrReply(ctx, t(lang, 'rate_limited', { wait: rl.fmtWait(w, lang, t) })); return; }
   const status = await editOrReply(ctx, t(lang, 'recognizing'));
@@ -243,6 +250,7 @@ async function doRecognize(ctx, fileRef) {
 // INSTAGRAM: auto-download all items + a music button card.
 async function doInsta(ctx, url) {
   const lang = ctx.lang;
+  if (!featureOn('insta')) return editOrReply(ctx, t(lang, 'error_service'));
   let d;
   const status = await editOrReply(ctx, t(lang, 'processing'));
   try { d = await ig.resolve(url); }

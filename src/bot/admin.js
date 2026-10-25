@@ -15,14 +15,42 @@ function ownerGuard(ctx) {
 }
 
 panel.register('admin', async (ctx, p, lang) => {
+  const s = store.getStats();
+  const day = new Date().toISOString().slice(0, 10);
+  const users = store.count('users'), groups = store.count('chats');
+  const glob = store.get('settings', 'global') || {};
+  const onoff = (v) => v !== false ? '✅' : '❌';
+  const text = [
+    '🛠 <b>مدیریت Music</b>',
+    '━━━━━━━━━━━━',
+    `${glob.maintenance ? '🔴' : '🟢'} ربات: ${glob.maintenance ? 'نگهداری' : 'روشن'} · ⏱ آپتایم ${fmtUptime(process.uptime())}`,
+    `👥 ${num(lang, users)} کاربر · 💬 ${num(lang, groups)} گروه`,
+    `📈 امروز: 🔎 ${num(lang, s['day:' + day + ':search'] || 0)} · ⬇️ ${num(lang, s['day:' + day + ':download'] || 0)} · 🎤 ${num(lang, s['day:' + day + ':rec'] || 0)}`,
+    `📢 کانال‌ها: ${channel.channels().length} · صف انتشار: ${channel.queueList().length}`,
+  ].join('\n');
   const rows = [
-    [B(t(lang, 'admin_stats'), 'a:stats'), B(t(lang, 'admin_channels'), 'a:chans')],
-    [B(t(lang, 'admin_bans'), 'a:bans'), B(t(lang, 'admin_broadcast'), 'a:bc')],
-    [B(t(lang, 'admin_settings'), 'a:set'), B(t(lang, 'admin_langs'), 'a:langs')],
-    [B(t(lang, 'admin_tickets'), 'a:tickets'), B(t(lang, 'admin_health'), 'a:health')],
-    [R(t(lang, 'back'), 'nav:back')],
+    [B('📊 آمار', 'a:stats'), B('📢 کانال‌ها', 'a:chans')],
+    [B('🔒 قفل عضویت', 'a:fjlist'), B('📣 پیام همگانی', 'a:bc')],
+    [B('🎫 تیکت‌ها', 'a:tickets'), B('🚫 مسدودی‌ها', 'a:bans')],
+    [B('🩺 سلامت', 'a:health'), B('⚙️ تنظیمات', 'a:set')],
+    [B('🌐 زبان‌ها', 'a:langs'), B('🔌 سرویس‌ها', 'a:features')],
+    [R('✖️ بستن', 'nav:close'), B('🔄 رفرش', 'a:panel')],
   ];
-  return { text: t(lang, 'admin_panel'), keyboard: kb(rows) };
+  return { text, keyboard: kb(rows) };
+});
+function fmtUptime(sec) { const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60); return h ? h + 'س ' + m + 'د' : m + ' دقیقه'; }
+
+panel.register('admin_features', async (ctx, p, lang) => {
+  const s = store.get('settings', 'features') || {};
+  const on = (k) => s[k] !== false;
+  const lbl = (k, name) => `${on(k) ? '✅' : '❌'} ${name}`;
+  const rows = [
+    [B(lbl('search', 'جستجو'), 'feat:search'), B(lbl('insta', 'اینستاگرام'), 'feat:insta')],
+    [B(lbl('recog', 'شناسایی آهنگ'), 'feat:recog'), B(lbl('inline', 'حالت inline'), 'feat:inline')],
+    [B(lbl('groups', 'گروه‌ها'), 'feat:groups'), B(lbl('channel', 'انتشار خودکار کانال'), 'feat:channel')],
+    [R(t(lang, 'back'), 'a:panel')],
+  ];
+  return { text: '🔌 <b>قابلیت‌ها</b>\nهر یک را روشن/خاموش کن.', keyboard: kb(rows) };
 });
 
 panel.register('admin_stats', async (ctx, p, lang) => {
