@@ -39,8 +39,12 @@ function ffprobe(file) {
     if(e)return reject(e);try{const j=JSON.parse(out);const v=j.streams&&j.streams.find(x=>x.width&&x.height)||{};resolve({duration:Number(j.format&&j.format.duration)||0,width:v.width||0,height:v.height||0});}catch(x){reject(x);}
   }));
 }
+function audioCacheKey(tr) {
+  const meta = require('../services/trackMeta').cleanTrackMeta(tr);
+  return 'audio:' + String(tr.sid || tr.id).replace(/^sc_/, '') + '|' + meta.artist + '|' + meta.title + '|cleanTrackMeta-v2';
+}
 async function warmAudio(tr) {
-  const key='audio:'+String(tr.sid||tr.id).replace(/^sc_/,'');
+  const key = audioCacheKey(tr);
   const hit=cached(key,'mp3'); if(hit)return hit;
   return withLock(key,()=>withWarmSlot(async()=>{
     const now=cached(key,'mp3'); if(now)return now;
@@ -69,4 +73,4 @@ async function warmVideo(postUrl, item, variant, insta) {
   }));
 }
 function getVideo(key) { return cached('video:'+key,'mp4'); }
-module.exports={warmAudio,warmVideo,getVideo,cached,pathFor,keyHash,evict,dir,TTL,MAX_CACHE};
+module.exports={warmAudio,warmVideo,getVideo,cached,pathFor,keyHash,evict,dir,TTL,MAX_CACHE,audioCacheKey};

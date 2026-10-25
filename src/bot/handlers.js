@@ -24,9 +24,11 @@ function sidOf(tr) { return sc.sidOf(tr); }
 function card(tr) {
   const m = cleanTrackMeta(tr);
   const dur = tr.duration || fmtDur(tr.duration_ms) || '';
-  return `⁨${m.artist || '؟'}⁩ ⁨—⁩ ⁨${m.title || '؟'}⁩${dur ? ' · ⁨' + dur + '⁩' : ''}`;
+  const label = `⁨${m.artist || '؟'}⁩ ⁨—⁩ ⁨${m.title || '؟'}⁩`;
+  return `${label}${dur ? ' · ⁨' + persianDigits(dur) + '⁩' : ''}`;
 }
 function fmtDur(ms) { if (!ms) return ''; const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+function persianDigits(value) { return String(value).replace(/\d/g, (d) => '۰۱۲۳۴۵۶۷۸۹'[Number(d)]); }
 
 async function editOrReply(ctx, text, extra) {
   try { return await ctx.reply(text, { parse_mode: 'HTML', disable_web_page_preview: true, ...(extra || {}) }); } catch (_) { return null; }
@@ -37,13 +39,14 @@ async function answer(ctx, text, alert) { if (ctx.callbackQuery) { try { await c
 panel.register('menu', async (ctx, p, lang) => {
   const own = isOwner(ctx.from.id);
   const rows = [
-    [URLB(t(lang, 'menu_addgroup'), `https://t.me/${config.botUsername}?startgroup=true&admin=delete_messages+pin_messages`)],
+    [URLB(t(lang, 'menu_addgroup'), `https://t.me/${config.botUsername}?startgroup=true&admin=delete_messages+pin_messages`, 'success')],
     [URLB(t(lang, 'menu_channel'), `https://t.me/${String(config.channel).replace('@', '')}`), B(t(lang, 'menu_lang'), 'm:lang')],
     [B(t(lang, 'menu_help'), 'm:help'), B(t(lang, 'menu_support'), 'm:support')],
   ];
   if (own) rows.push([B(t(lang, 'menu_admin'), 'a:panel')]);
   const welcome = String(t(lang, 'welcome', { name: '' })).replace('{bot}', ctx.botUsername || config.botUsername);
-  return { text: fmt(welcome.replace('{name}', e(ctx.from.first_name || 'دوست'))), keyboard: kb(rows) };
+  const name = String(ctx.from.first_name || '').trim();
+  return { text: fmt(welcome.replace('{name}', e(name))), keyboard: kb(rows) };
 });
 
 panel.register('help', async (ctx, p, lang) => ({
@@ -63,17 +66,38 @@ panel.register('lang', async (ctx, p, lang) => {
 
 panel.register('results', async (ctx, params, lang) => {
   const { q, page = 1, items } = params;
-  const rows = items.slice((page - 1) * SEARCH_PAGE, page * SEARCH_PAGE).map((tr) =>
-    [B(vtruncate(card(tr), 52), 'pick:' + sidOf(tr))]);
+  const start = (page - 1) * SEARCH_PAGE;
+  const visible = items.slice(start, page * SEARCH_PAGE);
+  const titles = new Map();
+  const lines = visible.map((tr, i) => {
+    const meta = cleanTrackMeta(tr);
+    const base = meta.title || tr.title || '؟';
+    const count = (titles.get(base) || 0) + 1; titles.set(base, count);
+    const title = count > 1 ? `${base} · نسخه‌ی ${persianDigits(count)}` : base;
+    const artist = meta.artist && visible.some((x) => cleanTrackMeta(x).artist !== meta.artist) ? ` — ${meta.artist}` : '';
+    return `${persianDigits(start + i + 1)}. ${esc(title)}${artist ? ` — ${esc(artist)}` : ''}${tr.duration || fmtDur(tr.duration_ms) ? ` — ${persianDigits(tr.duration || fmtDur(tr.duration_ms))}` : ''}`;
+  });
+  const rows = visible.map((tr) => {
+    const m = cleanTrackMeta(tr);
+    const label = truncateVisual(m.title || tr.title || '؟', 34);
+    return [B(label, 'pick:' + sidOf(tr))];
+  });
   const totalPages = Math.max(1, Math.ceil(items.length / SEARCH_PAGE));
   const nav = [];
   if (page > 1) nav.push(B('⬅️', `pg:${page - 1}`));
   nav.push(B(`${num(lang, page)}/${num(lang, totalPages)}`, 'noop'));
   if (page < totalPages) nav.push(B('➡️', `pg:${page + 1}`));
-  if (nav.length > 1 || totalPages > 1) rows.push(nav);
+  if (totalPages > 1) rows.push(nav);
   rows.push([R(t(lang, 'back'), 'nav:menu')]);
-  return { text: t(lang, 'results_title', { q: iso(esc(q)) }), keyboard: kb(rows) };
+  const artists = [...new Set(visible.map((tr) => cleanTrackMeta(tr).artist).filter(Boolean))];
+  const heading = `🎤 ${artists.length === 1 ? esc(artists[0]) + ' · ' : ''}${num(lang, items.length)} آهنگ`;
+  return { text: `${heading}\n${lines.join('\n')}`, keyboard: kb(rows) };
 });
+
+function truncateVisual(value, max) {
+  const chars = Array.from(String(value));
+  return chars.length > max ? chars.slice(0, max - 1).join('') + '…' : chars.join('');
+}
 
 panel.register('track', async (ctx, params, lang) => {
   const tr = await sc.track(params.sid);
@@ -129,7 +153,7 @@ panel.register('recog', async (ctx, params, lang) => {
     `👤 ${esc(d.artist || '?')}`,
     d.album ? `💿 ${esc(d.album)}` : null,
     d.year ? `📅 ${iso(esc(String(d.year)))}` : null,
-    d.confidence != null ? `🎯 ${num(lang, Math.round(d.confidence))}%` : null,
+    d.confidence != null ? `🎯 اطمینان: ${num(lang, Math.round(d.confidence))}%` : null,
   ].filter(Boolean);
   const q = `${d.artist || ''} ${d.title || ''}`.trim();
   const rows = [
@@ -306,6 +330,17 @@ async function doRecognize(ctx, fileRef) {
     if (!d || !d.found) { await editOrReply(ctx, t(lang, 'recognize_none')); return; }
     store.incrStats('rec');
     ctx.panelMsgId = status && status.message_id;
+    if (Number(d.confidence || 0) >= 70) {
+      const q = `${d.artist || ''} ${d.title || ''}`.trim();
+      try {
+        const found = await sc.search(q, 1, lang);
+        const tr = (found.results || [])[0];
+        if (tr) {
+          if (status && status.message_id) await ctx.api.deleteMessage(ctx.chat.id, status.message_id).catch(() => {});
+          return runDownload(ctx, sc.sidOf(tr));
+        }
+      } catch (_) {}
+    }
     await panel.show(ctx, 'recog', { data: d }, { push: false });
   } catch (e) {
     log.warn('recog fail', e.code);
@@ -330,8 +365,7 @@ async function doInsta(ctx, url) {
   const control = kb([
     hasVideo ? [G('🎵 ' + t(lang, 'ig_recognize'), 'igx')] : [],
     q ? [B('🔍 ' + t(lang, 'ig_search_sc'), 'igm:' + Buffer.from(q).toString('base64url').slice(0, 44))] : [],
-    [R(t(lang, 'back'), 'nav:menu')],
-  ]);
+  ].filter((row) => row.length));
   setPanel(ctx.chat.id, ctx.from.id, { igData: d, igQuery: q });
 
   let sent = 0;

@@ -40,4 +40,11 @@
 Two distinct codebases exist and MUST NOT be force-merged:
 - `Alimsv-d/Music` (branch `main`, GitHub) = the Cloudflare Workers bot (ESM, KV store, /dl proxy, wrangler). Push updates here.
 - Local `cpanel-app` branch + `~/music` working tree = the LIVE cPanel Node bot (CommonJS, grammY, node:http, node:sqlite) currently serving Telegram on `DevCoder.ir`.
-The working tree intentionally holds the cPanel app; `main`/`master` track the worker repo. Do not `git reset --hard` to the worker origin in this directory — it replaces the running app's runtime and breaks production.
+
+- 2026-10-26: Created local-only backup tags `backup-final-2026-10-26-cpanel-app` and `backup-final-2026-10-26-main` before edits; neither branch was reset or merged. Disk usage measured 84%, so large downloads, dependency installation, and live media/E2E work are deferred under the host quota safety rule.
+- 2026-10-26: No reachable prior commit containing the old `style` implementation was found by `git log -S"style" --oneline --all -- src`; this is not evidence that Telegram accepts it. Added centralized semantic style values with one narrow retry for explicit style-related Bad Request errors; live Bot API acceptance remains unverified.
+- 2026-10-26: Reordered known-artist extraction ahead of plausible-uploader fallback and escaped artist aliases when removing them from title text. No golden-set accuracy claim is made without fixtures and live result evidence.
+- 2026-10-26: The requested cPanel pass targets only `cpanel-app`; `main` remains untouched. Existing worktree edits are retained and all new changes are scoped to the live Node app.
+- 2026-10-26: Force-join is enforced centrally for every user-facing update path rather than only `/start`; membership states are evaluated with `is_member`, positive/negative caches are bounded, and unavailable gates are reported separately instead of locking the user out.
+- 2026-10-26: Group diagnostics and update-drop reasons are structured without secrets. Synthetic webhook delivery is useful for routing tests, but it cannot substitute for a real Telegram delivery/API response.
+- 2026-10-26: Live API checks confirmed the bot is an admin in `Checker`, direct sendMessage succeeds, and the owner is a creator in the configured gate. The requested Reel resolve returned `E_PRIVATE_OR_NOT_FOUND`/404; no music-recognition success is claimed without media bytes.

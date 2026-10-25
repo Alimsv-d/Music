@@ -25,6 +25,22 @@ function score(q, tr) {
   if (tr.plays) s += Math.min(0.05, Math.log10(tr.plays + 1) / 200);
   return Math.max(0, Math.min(1, s));
 }
+function lyricWindows(raw) {
+  const words = String(raw || '').trim().split(/\s+/).filter(Boolean);
+  if (words.length <= 6) return [String(raw || '').trim()];
+  const windows = [];
+  for (let i = 0; i + 6 <= words.length && windows.length < 4; i += 4) windows.push(words.slice(i, i + 6).join(' '));
+  const last = words.slice(-6).join(' ');
+  if (last && !windows.includes(last)) windows.push(last);
+  return windows;
+}
+function lyricOverlap(query, lyrics) {
+  const tokens = (s) => new Set(normalize(s).split(/\s+/).filter((x) => x.length > 1));
+  const a = tokens(query), b = tokens(lyrics);
+  if (!a.size || !b.size) return 0;
+  let hit = 0; for (const x of a) if (b.has(x)) hit++;
+  return hit / a.size;
+}
 async function search(raw, lang) {
   const a = analyze(raw);
   if (a.long || !a.normalized) return { kind: 'invalid', query: a };
@@ -32,17 +48,25 @@ async function search(raw, lang) {
   const errors = settled.filter((x) => x.status === 'rejected');
   const merged = new Map();
   for (const x of settled) if (x.status === 'fulfilled') for (const tr of (x.value.results || [])) merged.set(sc.sidOf(tr), tr);
-  if (!merged.size && a.lyric) {
-    try {
-      const d = await sh.searchText(raw, 8, true);
-      if (d && d.found && (d.artist || d.title)) {
-        const q = `${d.artist || ''} ${d.title || ''}`.trim();
-        const x = await sc.search(q, 1, lang);
-        for (const tr of (x.results || [])) merged.set(sc.sidOf(tr), tr);
-      }
-    } catch (_) {}
+  if (a.lyric) {
+    for (const window of lyricWindows(raw)) {
+      try {
+        const d = await sh.searchText(window, 8, true);
+        const candidates = [...(d && d.results || [])];
+        if (d && (d.found || d.artist || d.title)) candidates.unshift(d);
+        for (const candidate of candidates.slice(0, 5)) {
+          if (!candidate.artist || !candidate.title) continue;
+          const verified = await sh.lyrics(candidate.artist, candidate.title);
+          if (!verified || !verified.text || lyricOverlap(window, verified.text) < 0.55) continue;
+          const x = await sc.search(`${candidate.artist} ${candidate.title}`, 1, lang);
+          for (const tr of (x.results || [])) merged.set(sc.sidOf(tr), tr);
+          if (merged.size) break;
+        }
+        if (merged.size) break;
+      } catch (_) {}
+    }
   }
   const items = [...merged.values()].map((tr) => ({ tr, score: score(a.normalized, tr) })).sort((x,y) => y.score - x.score);
   return { kind: items.length ? 'ok' : (errors.length === settled.length ? 'error' : 'empty'), query: a, items };
 }
-module.exports = { analyze, search, score };
+module.exports = { analyze, search, score, lyricWindows, lyricOverlap };

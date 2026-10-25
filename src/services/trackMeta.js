@@ -40,6 +40,7 @@ function cleanTrackMeta(raw) {
     .replace(new RegExp(VERSION.source, 'gi'), ' ')
     .replace(NOISE, ' ')
     .replace(/[\[\](){}#@*!؟?.,_'"|-]+/g, ' ')
+    .replace(/\b(?:remix|live|slowed|cover)\b/gi, ' ')
     .replace(/\s+/g, ' ').trim();
   let artist = '';
   let conf = 0;
@@ -64,7 +65,7 @@ function cleanTrackMeta(raw) {
   // 3) "X by Y" or "آهنگ X از Y" — artist comes AFTER the preposition.
   if (!artist) {
     const m = cleanTitle.match(/(.+?)\s+(?:by|از)\s+(.+)/i);
-    if (m) { cleanTitle = m[1].trim(); artist = m[2].trim(); conf = Math.max(conf, 2); }
+    if (m) { cleanTitle = normalize(m[1].replace(new RegExp(VERSION.source, 'gi'), ' ').replace(NOISE, ' ').replace(/(?:^|\s)[رر][یي][مم][یي][کك]س(?=\s|$)/giu, ' ').replace(/\s+/g, ' ').trim()); artist = m[2].trim(); conf = Math.max(conf, 2); }
   }
 
   // 4) "featuring" / "feat"
@@ -73,20 +74,26 @@ function cleanTrackMeta(raw) {
     if (m) { cleanTitle = m[1].trim(); artist = artist || m[2].trim(); }
   }
 
-  // 5) uploader-as-artist only if uploader looks like a real artist (alias index or shaped name)
+  // 6) Prefer a known artist embedded in the title to a plausible uploader.
+  //    Strip that artist's surrounding descriptor words, but keep the song title.
+  if (!artist) {
+    const normalizedTitle = normalize(cleanTitle);
+    const cue = '(?:[رر][یي]م[یي][کك]س|remix|شاد|غمگین|آهنگ|موزیک|نسخه|کاور|cover|slowed|live|دانلود|جدید|کامل)';
+    const cueClean = normalizedTitle.replace(new RegExp(cue, 'gi'), ' ').replace(/\s+/g, ' ').trim();
+    for (const a of getAliasIndex()) {
+      const escaped = String(a).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(escaped, 'i');
+      if (cueClean.includes(normalize(a))) { artist = a; cleanTitle = normalize(cueClean.replace(re, ' ').replace(/[-–—|]/g, ' ').replace(/\s+/g, ' ').replace(/(?:^|\s)(?:از|by|of|from|برای)(?=\s|$)/giu, ' ').replace(/(?:^|\s)[رر][یي][مم][یي][کك]س(?=\s|$)/giu, ' ').replace(/\s+/g, ' ').trim()); conf = Math.max(conf, 2); break; }
+    }
+  }
+
+  // 7) uploader-as-artist only if uploader looks like a real artist (alias index or shaped name)
   if (!artist) {
     const su = isLikelyArtist(uploader, null);
     if (su > 0) { artist = uploader; conf = Math.max(conf, su); }
   }
 
-  // 6) fallback: if title itself contains a known artist name, extract it
-  if (!artist) {
-    for (const a of getAliasIndex()) {
-      if (normalize(cleanTitle).includes(normalize(a))) { artist = a; cleanTitle = cleanTitle.replace(new RegExp(a, 'i'), '').replace(/[-–—|]/g, ' ').trim(); conf = Math.max(conf, 1); break; }
-    }
-  }
-
-  // 7) last resort: uploader (low confidence) or cleaned title as artist
+  // 8) last resort: uploader (low confidence) or cleaned title as artist
   if (!artist) { artist = uploader || cleanTitle; conf = 0; }
   if (!cleanTitle) cleanTitle = title || artist;
 

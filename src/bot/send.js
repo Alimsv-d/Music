@@ -10,7 +10,8 @@ const { getStore } = require('../core/store');
 const log = require('../core/log');
 
 const MAX_BYTES = 48 * 1024 * 1024;
-const CACHE_VERSION = 'v3';
+const CACHE_VERSION = 'v4';
+const META_VERSION = 'cleanTrackMeta-v2';
 let ffmpegChecked = null;
 function hasFfmpeg() {
   if (ffmpegChecked !== null) return Promise.resolve(ffmpegChecked);
@@ -20,8 +21,8 @@ function runFfmpeg(args, timeout = 90000) { return new Promise((res, rej) => exe
 function ffprobeDuration(file) {
   return new Promise((res) => execFile('ffprobe', ['-v','error','-show_entries','format=duration','-of','csv=p=0',file], { timeout:20000 }, (e,out) => { const n=e?NaN:Number(String(out).trim()); res(Number.isFinite(n)?n:NaN); }));
 }
-async function toMp3(src,dst) {
-  await runFfmpeg(['-v','error','-y','-i',src,'-vn','-acodec','libmp3lame','-b:a','128k','-ar','44100','-ac','2',dst],150000);
+async function toMp3(src,dst,meta={}) {
+  await runFfmpeg(['-v','error','-y','-i',src,'-map_metadata','-1','-vn','-acodec','libmp3lame','-b:a','128k','-ar','44100','-ac','2','-metadata',`title=${meta.title || ''}`,'-metadata',`artist=${meta.artist || ''}`,dst],150000);
   if (!fs.existsSync(dst) || fs.statSync(dst).size < 40*1024) throw new Error('transcode produced unusable audio');
 }
 async function rmsAt(file, duration, fraction) {
@@ -60,15 +61,16 @@ async function buildValidatedAudio(tr, sid=sc.sidOf(tr)) {
     if(!await hasFfmpeg())throw new Error('ffmpeg unavailable; safe audio validation impossible');
     if(await isEncrypted(raw)){const e=new Error('encrypted source');e.code='ENCRYPTED';throw e;}
     const expected=Math.round((tr.duration_ms||0)/1000); const source=await validateAudio(raw,expected);
-    await toMp3(raw,mp3); const out=await validateAudio(mp3,source.duration);
+    const meta = require('../services/trackMeta').cleanTrackMeta(tr);
+    await toMp3(raw,mp3,meta); const out=await validateAudio(mp3,source.duration);
     fs.unlinkSync(raw);
     return {path:mp3,duration:out.duration,size:fs.statSync(mp3).size,rms:out.rms,cleanup(){try{fs.unlinkSync(mp3)}catch(_){}}};
   } catch(e){for(const f of [raw,mp3])try{fs.unlinkSync(f)}catch(_){};throw e;}
 }
 
 async function downloadAndSend(ctx,tr,lang) {
-  const store=getStore(),sid=sc.sidOf(tr),chatId=ctx.chat.id,key=store.get('file_id_cache',sid);
-  const title=tr.title||'track', performer=tr.artist||'';
+  const store=getStore(),sid=sc.sidOf(tr),meta=require('../services/trackMeta').cleanTrackMeta(tr),cacheKey=`${sid}|${meta.artist}|${meta.title}|${META_VERSION}`,chatId=ctx.chat.id,key=store.get('file_id_cache',cacheKey);
+  const title=meta.title||'track', performer=meta.artist||'';
   if(key && key.file_id && key.v===CACHE_VERSION){
     try{await ctx.api.sendAudio(chatId,key.file_id,{title,performer,duration:key.duration,caption:audioCaption(tr,lang),parse_mode:'HTML'});return;}
     catch(_){store.del('file_id_cache',sid);}
@@ -86,7 +88,7 @@ async function downloadAndSend(ctx,tr,lang) {
       try{await ctx.api.deleteMessage(chatId,msg.message_id)}catch(_){}
       throw new Error('Telegram media metadata differs from validated upload');
     }
-    store.set('file_id_cache',sid,{file_id:result.file_id,v:CACHE_VERSION,duration:audio.duration,validated:true,size:result.file_size||audio.size});
+    store.set('file_id_cache',cacheKey,{file_id:result.file_id,v:CACHE_VERSION,metaVersion:META_VERSION,artist:performer,title,duration:audio.duration,validated:true,size:result.file_size||audio.size});
   } finally {audio.cleanup();}
 }
 module.exports={downloadAndSend,buildValidatedAudio,validateAudio,ffprobeDuration,CACHE_VERSION};

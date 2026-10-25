@@ -1,35 +1,29 @@
-# QA CHECKLIST
+## Current run (2026-10-26)
+- ✅ Branch verified: `cpanel-app`; `main` was not changed.
+- ✅ `node --check` for changed source files.
+- ✅ `npm test` — 20/20 tests pass.
+- ✅ `git diff --check` — clean.
+- ✅ `npm audit --omit=dev` — 0 vulnerabilities.
+- ✅ Bot API `getWebhookInfo`: webhook active, pending `0`, allowed updates include `message`, `callback_query`, `inline_query`, `my_chat_member`, `chat_member`.
+- ✅ `set-webhook.js` response confirmed the expanded allowed-update list.
+- ✅ Force-join `getChatMember` live check for owner returned `status=creator`; no non-member account available in this run.
+- ✅ Live `sendMessage` to Checker returned `message_id=1263`; `getChatMember` returned bot `administrator`, `can_delete_messages=true`; owner gate check returned `creator`.
+- ✅ Signed synthetic webhook `/diag` probes for Checker supergroup and topic were accepted at preparation level; actual Telegram-generated update handling still needs client confirmation.
+- ⚠️ Live webhook previously reported HTTP 500; current API response has no active last-error message, but group delivery must still be tested in Telegram.
+- ⬜ Owner/group live messages, non-member account, inline selection, real media uploads, and Instagram fixture remain manual.
 
-Status legend: ✅ verified with evidence; ⚠️ partial/upstream or manual verification; ⬜ not completed.
+## Requested features
+- ✅ Group routing accepts commands with bot suffix, help text, mentions, replies, short smart-detect candidates, and topics; ordinary long/link chatter stays silent.
+- ✅ `/diag` reports bot membership, send permission, latest update, and latest drop reason.
+- ✅ Force-join now checks all configured gates, recognizes restricted `is_member`, uses bounded positive/negative cache, invalidates on membership updates, and sends a timed group lock notice.
+- ✅ Audio transcode explicitly clears metadata and writes clean title/artist; cache version/key includes metadata.
+- ✅ Result buttons contain title only, visual truncation, numbered detail lines, artist heading, duration, duplicate disambiguation, pagination, and red back row.
+- ✅ Instagram captions no longer include the back button; existing automatic fingerprint path remains available.
+- ✅ Lyric search uses bounded 4–6-word windows and lyrics overlap verification; no success-rate claim without the requested live corpus.
+- ⚠️ Inline audio now warms up to eight candidates and uses metadata-keyed cache/proxy URLs; real Telegram client selection remains unverified.
 
-## B1–B11 regressions
-- [x] B1 root cause reproduced: download JSON manifest + stream 413 for HLS-only track.
-- [x] B1 full progressive files validated with ffprobe: 218.671s/metadata 218.622s and 290.366s/metadata 290s.
-- [ ] B1 HLS-only >=8-minute source completely stitched and validated end-to-end. 619s test interrupted; do not claim this green.
-- [x] B2 `/diag` and explicit group command/mention/reply paths; privacy limitation recorded.
-- [x] B3 inline answers audio results using signed `/m/` and cached audio file_id.
-- [ ] B3 actual Telegram client inline selection test.
-- [x] B4 inline Instagram video result schema + callback path implemented.
-- [ ] B4 actual Telegram inline Instagram result/button test.
-- [x] B5 Instagram link is routed to resolve, tracker parameters removed, actual media gets controls.
-- [ ] Instagram story capability: service OpenAPI does not document stories; real upstream story resolve not confirmed.
-- [x] B6 `/start` uses fresh message; navigation keyed by message id.
-- [x] B7 source scan confirms no location request/read.
-- [x] B8 mode-select buttons removed; auto-detect remains.
-- [x] B9 admin dashboard/feature switches/gates and concise welcome added.
-- [x] B10 search selection + deep link send file to current private chat; inline audio result does not deep-link.
-- [x] B11 cover/caption/action buttons + voice demo fallback implemented.
-
-## Operational/security
-- [x] 11 cPanel Node unit tests pass.
-- [x] 53 worker Vitest tests pass.
-- [x] 19 worker E2E tests pass.
-- [x] Worker lint and secret scan pass.
-- [x] cPanel `node --check` of changed Node files.
-- [x] cPanel app `/health` healthy after restart; RSS ~79MB.
-- [x] Webhook synthetic update responds HTTP 200; `getWebhookInfo` old last-error timestamp predates restart, pending count 0.
-- [x] New cPanel app commit pushed to private repo branch `cpanel-app`; worker `main` remains separate.
-- [ ] Full 200-update host load test after latest code changes.
-- [ ] `npm audit` on host dependencies.
-- [ ] Verify repo visibility is private using GitHub API / `gh` (not available on this host).
-- [ ] Full historical secret scan / history rewrite (not performed; do not rewrite shared repo history without explicit backup and review).
+## Existing regression evidence
+- ✅ Query, cache, fingerprint, i18n, rate-limit, HTTP, Instagram URL, metadata, keyboard, SoundCloud, and audio-playability tests: 20/20.
+- ⚠️ Live Instagram `reel/Dai1eHIAfLI`: resolver returned `E_PRIVATE_OR_NOT_FOUND` (HTTP 404); audio identification could not run.
+- ⚠️ Lyric matching runtime fixture confirmed the requested Persian line creates two six-token windows; no validated Shazam lyric result and no ≥15-line success-rate corpus were available, so accuracy is unclaimed.
+- ⬜ `/gatetest` live behavior, pending request replay after join, invalid-gate owner panel, Instagram background audio/music button, and signed proxy HEAD/GET wait remain unverified.

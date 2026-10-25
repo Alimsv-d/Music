@@ -18,17 +18,52 @@ const ig = require('./services/instagram');
 const { normalize, isSoundCloudUrl, similarity } = require('./services/query');
 const { downloadFile } = require('./bot/send');
 const mediaCache = require('./services/mediaCache');
+const { cleanTrackMeta } = require('./services/trackMeta');
 
 const bot = new Bot(config.botToken);
+const memberCache = new Map();
+const invalidGateAlertAt = new Map();
+const groupNoticeAt = new Map();
+let lastUpdateSeen = { at: 0, update_id: null, kind: 'none', chat_id: null };
+let lastDrop = { at: 0, code: 'none', update_id: null };
+
+function dropUpdate(ctx, code) {
+  lastDrop = { at: Date.now(), code, update_id: ctx.update && ctx.update.update_id };
+  log.info('update_dropped', { code, update_id: lastDrop.update_id, chat_id: ctx.chat && String(ctx.chat.id) });
+}
+
+// Retry exactly once only for Telegram's explicit bad-request style rejection.
+bot.api.config.use((prev, method, payload, signal) => prev(method, payload, signal).catch(async (error) => {
+  const description = String(error && error.description || '');
+  if (!/\bstyle\b/i.test(description) || !/bad request/i.test(description)) throw error;
+  const retry = structuredClone(payload);
+  let removed = false;
+  const strip = (markup) => {
+    for (const row of (markup && markup.inline_keyboard) || []) for (const button of row) {
+      if (Object.prototype.hasOwnProperty.call(button, 'style')) { delete button.style; removed = true; }
+    }
+  };
+  strip(retry.reply_markup);
+  if (!removed) throw error;
+  log.warn('Telegram rejected button style; retrying once without style');
+  return prev(method, retry, signal);
+}));
 
 // ---------- context middleware: lang, user tracking, force-join ----------
 bot.use(async (ctx, next) => {
+  lastUpdateSeen = { at: Date.now(), update_id: ctx.update && ctx.update.update_id, kind: Object.keys(ctx.update || {}).find((k) => k !== 'update_id') || 'unknown', chat_id: ctx.chat && String(ctx.chat.id) };
   if (ctx.from) trackUser(ctx.from, ctx.chat);
   ctx.lang = ctx.from ? userLang(ctx.from.id, ctx.chat) : 'fa';
   // maintenance
   const s = store.get('settings', 'global') || {};
   if (s.maintenance && !isOwner(ctx.from && ctx.from.id)) {
     if (ctx.message) await ctx.reply(t(ctx.lang, 'maintenance'));
+    dropUpdate(ctx, 'maintenance');
+    return;
+  }
+  const membershipUpdate = !!(ctx.update && (ctx.update.chat_member || ctx.update.my_chat_member));
+  if (ctx.from && ctx.chat && ctx.chat.type !== 'channel' && !membershipUpdate && !(ctx.callbackQuery && ctx.callbackQuery.data === 'fj:check') && !(await checkForceJoin(ctx))) {
+    dropUpdate(ctx, 'forcejoin');
     return;
   }
   return next();
@@ -40,19 +75,56 @@ function featureOn(name) {
 }
 
 // force-join check (multi-channel). Returns true if member of ALL required channels.
-async function checkForceJoin(ctx) {
+async function checkForceJoin(ctx, options = {}) {
   const s = store.get('settings', 'global') || {};
   const fj = Array.isArray(s.forcejoin) ? s.forcejoin : (s.forcejoin ? [s.forcejoin] : []);
-  if (!fj.length || isOwner(ctx.from.id)) return true;
+  const testUntil = store.get('settings', 'gatetest:' + String(ctx.from && ctx.from.id)) || 0;
+  const testMode = testUntil > Date.now();
+  if (!fj.length || (isOwner(ctx.from.id) && !testMode)) return true;
   const missing = [];
-  for (const ch of fj) {
+  const uid = String(ctx.from.id);
+  for (const raw of fj) {
+    const gate = typeof raw === 'object' ? raw : { id: raw, type: 'chat', enabled: true };
+    if (gate.enabled === false) continue;
+    if (gate.type === 'bot_link') { missing.push({ gate, unverifiable: true }); continue; }
+    const key = `${String(gate.id)}:${uid}`;
+    const cached = !options.bypass && !options.simulate && memberCache.get(key);
+    if (cached && cached.until > Date.now()) { if (!cached.member) missing.push({ gate }); continue; }
     try {
-      const m = await ctx.api.getChatMember(ch, ctx.from.id);
-      if (!['member', 'administrator', 'creator'].includes(m.status)) missing.push(ch);
-    } catch (_) { missing.push(ch); }
+      const m = (options.simulate || testMode) ? { status: 'left', is_member: false } : await ctx.api.getChatMember(gate.id, ctx.from.id);
+      const member = ['creator', 'administrator', 'member'].includes(m.status) || (m.status === 'restricted' && m.is_member === true);
+      memberCache.set(key, { member, until: Date.now() + (member ? 45000 : 5000) });
+      if (!member) missing.push({ gate });
+    } catch (e) {
+      gate.invalid = true;
+      missing.push({ gate, invalid: true });
+      const throttle = String(gate.id), prior = invalidGateAlertAt.get(throttle) || 0;
+      if (Date.now() - prior > 3600000) {
+        invalidGateAlertAt.set(throttle, Date.now());
+        ctx.api.sendMessage(config.ownerId, `⚠️ بررسی gate عضویت ناموفق است: ${String(gate.id)}`).catch(() => {});
+      }
+    }
   }
   if (!missing.length) return true;
-  const rows = missing.map((c) => [URLB(t(ctx.lang, 'btn_join'), `https://t.me/${String(c).replace('@', '')}`)]);
+  if (testMode) {
+    const sent = await ctx.reply(t(ctx.lang, 'forcejoin_msg'), { reply_markup: kb([[G(t(ctx.lang, 'btn_check'), 'fj:check')]]) });
+    if (sent) setTimeout(() => ctx.api.deleteMessage(ctx.chat.id, sent.message_id).catch(() => {}), 30000).unref?.();
+    return false;
+  }
+  if (ctx.chat.type !== 'private') {
+    const nkey = `${ctx.chat.id}:${uid}`, prior = groupNoticeAt.get(nkey) || 0;
+    if (Date.now() - prior >= 600000) {
+      groupNoticeAt.set(nkey, Date.now());
+      const sent = await ctx.reply(t(ctx.lang, 'forcejoin_msg')).catch(() => null);
+      if (sent) setTimeout(() => ctx.api.deleteMessage(ctx.chat.id, sent.message_id).catch(() => {}), 30000).unref?.();
+    }
+    return false;
+  }
+  const rows = missing.map(({ gate, unverifiable, invalid }) => {
+    const label = unverifiable ? 'عضویت غیرقابل تأیید' : invalid ? '⚠️ نامعتبر' : t(ctx.lang, 'btn_join');
+    const target = String(gate.url || gate.id || '').replace(/^@/, '');
+    return [URLB(label, /^-?\d+$/.test(target) || !target ? `https://t.me/${config.botUsername}` : `https://t.me/${target}`)];
+  });
   rows.push([G(t(ctx.lang, 'btn_check'), 'fj:check')]);
   await ctx.reply(t(ctx.lang, 'forcejoin_msg'), { reply_markup: kb(rows) });
   return false;
@@ -104,9 +176,15 @@ bot.command('recognize', async (ctx) => {
   else await ctx.reply(t(ctx.lang, 'ask_voice'));
 });
 bot.command('help', async (ctx) => panel.show(ctx, 'help', {}, { push: false }));
+bot.hears(/^(?:راهنما|help)$/i, async (ctx) => panel.show(ctx, 'help', {}, { push: false }));
 bot.command('admin', async (ctx) => {
   if (!isOwner(ctx.from.id) || ctx.chat.type !== 'private') return;
   await panel.show(ctx, 'admin', {}, { push: false });
+});
+bot.command('gatetest', async (ctx) => {
+  if (!isOwner(ctx.from.id) || ctx.chat.type !== 'private') return;
+  store.set('settings', 'gatetest:' + String(ctx.from.id), Date.now() + 300000);
+  await ctx.reply('آزمایش gate برای ۵ دقیقه فعال شد؛ اجرای درخواست شما به‌صورت غیرعضو بررسی می‌شود.');
 });
 bot.command('diag', async (ctx) => {
   if (ctx.chat.type === 'private') return;
@@ -122,6 +200,8 @@ bot.command('diag', async (ctx) => {
     `👁 دیدن پیام‌ها: ${isAdmin ? 'همه (ادمین)' : 'فقط فرمان/منشن/ریپلای — برای دیدن همه، ادمین کن یا /setprivacy را خاموش کن'}`,
     `🧠 تشخیص هوشمند: ${gs.smart !== false ? 'روشن' : 'خاموش'}`,
     `💬 نوع چت: ${ctx.chat.type}${ctx.message && ctx.message.message_thread_id ? ' · topic ' + ctx.message.message_thread_id : ''}`,
+    `🛰 آخرین آپدیت: ${lastUpdateSeen.update_id ?? '—'} · ${lastUpdateSeen.kind}`,
+    `🧹 آخرین حذف: ${lastDrop.code} · ${lastDrop.update_id ?? '—'}`,
     `✉️ دسترسی ارسال: ${member && member.status !== 'kicked' && member.status !== 'left' ? '✅' : '❌'}`,
   ];
   await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
@@ -131,6 +211,17 @@ bot.command('settings', async (ctx) => {
   if (!(await isGroupAdmin(ctx))) return;
   await showGroupSettings(ctx);
 });
+
+async function simulateGateForOwner(ctx) {
+  const s = store.get('settings', 'global') || {};
+  const fj = Array.isArray(s.forcejoin) ? s.forcejoin : (s.forcejoin ? [s.forcejoin] : []);
+  if (!fj.length) { await ctx.reply('gate برای آزمایش تعریف نشده است.'); return false; }
+  const oldFrom = ctx.from;
+  try {
+    const fake = { ...ctx, from: { ...oldFrom, id: -1 }, chat: { ...ctx.chat, type: 'private' } };
+    return !(await checkForceJoin(fake, { simulate: true, bypass: true }));
+  } finally { ctx.from = oldFrom; }
+}
 
 // ---------- group settings ----------
 async function isGroupAdmin(ctx) {
@@ -167,6 +258,9 @@ function extractFileRef(msg) {
 // ---------- text messages (private) ----------
 const TRIGGERS = ['آهنگ', 'موزیک', 'پخش', 'متن آهنگ', 'ترانه', 'music', 'song', 'play', 'lyrics', 'track', 'песня', 'музыка', '播放', 'أغنية', 'اغنية', 'لحن', 'canción', 'musica', 'musique', 'lied', 'şarkı', 'mahnı', 'اهنگ'];
 
+bot.on('my_chat_member', () => { memberCache.clear(); });
+bot.on('chat_member', () => { memberCache.clear(); });
+
 bot.on('message', async (ctx) => {
   const msg = ctx.message;
   if (msg.from && msg.from.is_bot) return;
@@ -189,6 +283,10 @@ bot.on('message', async (ctx) => {
   }
 
   const text = (msg.text || msg.caption || '').trim();
+  if (ctx.chat.type !== 'private' && text && !/^\/(?:start|help|music|search|song|recognize|diag|settings)(?:@\w+)?(?:\s|$)/i.test(text) && !text.toLowerCase().includes('@' + config.botUsername.toLowerCase()) && !(msg.reply_to_message && (await isReplyToBot(ctx, msg))) && !/^(?:راهنما|help)$/i.test(text) && !ig.isInstaUrl(text)) {
+    const gs = chatSettings(ctx.chat.id);
+    if (gs.smart === false || text.length >= 80 || /[@#]/.test(text) || containsLink(msg) || text.split(/\s+/).length > 6) return;
+  }
 
   // awaiting state (search query, insta link, ticket, admin inputs)
   const aw = H.getAwait(uid);
@@ -387,8 +485,16 @@ bot.on('callback_query', async (ctx) => {
     if (data === 'nav:menu') { await answer(); return panel.show(ctx, 'menu', {}, { push: false }); }
     if (data === 'nav:close') { await answer(); try { await ctx.deleteMessage(); } catch (_) {} return; }
     if (data === 'fj:check') {
-      const ok = await checkForceJoin(ctx);
-      if (ok) { await answer('✅'); return panel.show(ctx, 'menu', {}, { push: false }); }
+      const ok = await checkForceJoin(ctx, { bypass: true });
+      if (ok) {
+        await answer('✅');
+        memberCache.clear();
+        const prior = getPanel(ctx.chat.id, uid);
+        const pending = prior && prior.pendingRequest;
+        if (pending && pending.type === 'download') { setPanel(ctx.chat.id, uid, { pendingRequest: null }); return H.runDownload(ctx, pending.sid); }
+        if (pending && pending.type === 'search') { setPanel(ctx.chat.id, uid, { pendingRequest: null }); return H.doSearch(ctx, pending.query); }
+        return panel.show(ctx, 'menu', {}, { push: false });
+      }
       return answer(t(lang, 'not_member'), true);
     }
     if (data.startsWith('m:')) {
@@ -653,26 +759,25 @@ bot.on('inline_query', async (ctx) => {
   try {
     const d = await sc.search(q, 1, lang);
     const tracks = (d.results || []).slice(0, 10);
-    // Warm up to three results in the background with bounded cache worker pool.
-    for (const tr of tracks.slice(0, 3)) mediaCache.warmAudio(tr).catch((e) => log.debug('inline warm failed', { sid: sc.sidOf(tr), code: e.code || 'warm' }));
-    // Give the top result a bounded head start so the FIRST inline query also returns real audio.
-    if (tracks[0] && !mediaCache.cached('audio:' + sc.sidOf(tracks[0]), 'mp3')) {
-      await Promise.race([mediaCache.warmAudio(tracks[0]).catch(() => null), new Promise((r) => setTimeout(r, 3500))]);
-    }
+    // Try to make the strongest candidates immediately playable, then answer.
+    const prep = tracks.slice(0, 8).map((tr) => mediaCache.warmAudio(tr).catch(() => null));
+    await Promise.race([Promise.all(prep), new Promise((r) => setTimeout(r, 1800))]);
     const results = [];
     for (const [i, tr] of tracks.entries()) {
-      const sid = sc.sidOf(tr), cached = store.get('file_id_cache', sid);
-      if (cached && cached.file_id && cached.v === 'v3' && cached.validated) {
-        results.push({ type: 'audio', id: 'c' + sid, audio_file_id: cached.file_id, caption: `🎵 ${esc(tr.artist)} — ${esc(tr.title)}` });
+      const sid = sc.sidOf(tr), meta = cleanTrackMeta(tr), cachedKey = `${sid}|${meta.artist}|${meta.title}|cleanTrackMeta-v2`;
+      const cached = store.get('file_id_cache', cachedKey);
+      if (cached && cached.file_id && cached.v === 'v4' && cached.validated && cached.metaVersion === 'cleanTrackMeta-v2' && cached.artist === meta.artist && cached.title === meta.title) {
+        results.push({ type: 'audio', id: 'c' + sid, audio_file_id: cached.file_id, title: meta.title, performer: meta.artist, caption: `🎵 ${esc(meta.artist)} — ${esc(meta.title)}` });
         continue;
       }
-      const ready = mediaCache.cached('audio:' + sid, 'mp3');
+      const audioKey = mediaCache.audioCacheKey(tr);
+      const ready = mediaCache.cached(audioKey, 'mp3');
       if (!ready) continue;
-      const token = signMedia('a', sid, 1800);
-      results.push({ type: 'audio', id: 'a' + sid + '_' + i, audio_url: `${base}/m/${encodeURIComponent(token)}.mp3`, title: tr.title || 'Music', performer: tr.artist || '', audio_duration: ready.duration, caption: `🎵 ${esc(tr.artist)} — ${esc(tr.title)} · ${ready.duration}s` });
+      const token = signMedia('a', audioKey, 1800);
+      results.push({ type: 'audio', id: 'a' + sid + '_' + i, audio_url: `${base}/m/${encodeURIComponent(token)}.mp3`, title: meta.title || 'Music', performer: meta.artist || '', audio_duration: ready.duration, caption: `🎵 ${esc(meta.artist)} — ${esc(meta.title)} · ${ready.duration}s` });
     }
     if (!results.length) results.push({ type: 'article', id: 'preparing', title: '⏳ در حال آماده‌سازی آهنگ', description: 'چند لحظه دیگر همین عبارت را دوباره جستجو کن', input_message_content: { message_text: `🎧 ${esc(q)}\n⏳ فایل در حال آماده‌سازی است؛ دوباره جستجو کن.` } });
-    return ctx.answerInlineQuery(results.slice(0, 10), { cache_time: results[0].type === 'article' ? 2 : 30, is_personal: true, button: noQueryButton });
+    return ctx.answerInlineQuery(results.slice(0, 8), { cache_time: results[0].type === 'article' ? 2 : 30, is_personal: true, button: noQueryButton });
   } catch (e) { log.warn('inline search', e.code || 'service'); return ctx.answerInlineQuery([], { cache_time: 5 }); }
 });
 
@@ -705,7 +810,7 @@ async function serveSignedMedia(req, res, urlPath) {
   const token = decodeURIComponent(urlPath.slice(3)).replace(/\.(mp3|m4a|mp4)$/, '');
   const signed = verifyMedia(kind, token);
   if (!signed) { res.writeHead(403); return res.end(); }
-  const hit = kind === 'a' ? mediaCache.cached('audio:' + signed.id, 'mp3') : mediaCache.getVideo(signed.id);
+  const hit = kind === 'a' ? mediaCache.cached(signed.id, 'mp3') : mediaCache.getVideo(signed.id);
   if (!hit) { res.writeHead(503, { 'retry-after': '2', 'cache-control': 'no-store' }); return res.end('media is still preparing'); }
   const size = hit.size;
   const type = kind === 'a' ? 'audio/mpeg' : 'video/mp4';
