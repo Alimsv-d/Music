@@ -15,7 +15,7 @@ function isInstaUrl(s) { return INSTA_RE.test(s || ''); }
 function cleanUrl(s) {
   const m = String(s || '').match(INSTA_RE);
   if (!m) return s;
-  const path = m[0].replace(/^https?:\/\//i, '').replace(/^www\./i, '');
+  const path = m[0].replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/^instagram\.com\//i, '');
   return 'https://www.instagram.com/' + path.replace(/\/+$/, '') + '/';
 }
 

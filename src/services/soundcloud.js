@@ -127,6 +127,9 @@ async function downloadHls(idOrSid, filePath, { maxBytes = 50 * 1024 * 1024, con
       for (const b of bufs) writeBuf(b);
     }
     return { ok: true, via: 'hls', segments: segs.length, size: written };
+  } catch (e) {
+    try { fs.unlinkSync(filePath); } catch (_) {}
+    throw e;
   } finally { try { fs.closeSync(fd); } catch (_) {} }
 }
 
@@ -161,4 +164,4 @@ async function health() {
   catch (e) { return { ok: false, ms: Date.now() - t0, error: e.code || e.message }; }
 }
 
-module.exports = { search, track, resolveUrl, checkDownload, downloadFile, streamUrl, downloadUrl, coverUrl, sidOf, health, ServiceError };
+module.exports = { search, track, resolveUrl, checkDownload, downloadFile, downloadHls, parseM3U8, streamUrl, downloadUrl, hlsUrl, coverUrl, sidOf, health, ServiceError };
