@@ -57,14 +57,20 @@ bot.command('start', async (ctx) => {
   if (!(await checkForceJoin(ctx))) return;
   if (arg.startsWith('t_')) {
     const sid = arg.slice(2);
-    await panel.show(ctx, 'track', { sid }).catch(() => panel.show(ctx, 'menu'));
+    await H.runDownload(ctx, sid);
     return;
   }
   if (arg.startsWith('s_')) {
     await H.doSearch(ctx, decodeURIComponent(arg.slice(2)));
     return;
   }
-  await panel.show(ctx, 'menu', {}, { push: false });
+  if (arg.startsWith('ig_')) {
+    // deep-link from an inline instagram music button after the user starts the bot
+    const q = Buffer.from(arg.slice(3), 'base64url').toString();
+    if (q) { try { const d = await sc.search(q, 1, ctx.lang); const tr = d.results && d.results[0]; if (tr) return H.runDownload(ctx, sc.sidOf(tr)); } catch (_) {} }
+    return panel.freshMenu(ctx);
+  }
+  await panel.freshMenu(ctx);
 });
 
 bot.command(['music', 'search', 'song'], async (ctx) => {
@@ -510,26 +516,112 @@ async function showNew(ctx) {
   } catch (_) { await ctx.reply(t(ctx.lang, 'error_service')); }
 }
 
-// ---------- inline mode ----------
+// ---------- inline mode: real audio/video results via signed proxy ----------
 bot.on('inline_query', async (ctx) => {
   const q = (ctx.inlineQuery.query || '').trim();
+  const base = config.publicUrl;
+  const lang = ctx.lang;
+
+  // Instagram link -> video result with a music-recognition button
+  if (ig.isInstaUrl(q)) {
+    try {
+      const d = await ig.resolve(q);
+      const it = (d.items || []).find((x) => x.type === 'video') || (d.items || [])[0];
+      const v = it && (it.variants || [])[0];
+      const results = [];
+      if (v) {
+        const vurl = ig.downloadUrlFor(d.source_url, { quality: v.quality, index: it.index });
+        const token = signMedia('v', vurl, 1800);
+        results.push({
+          type: it.type === 'video' ? 'video' : 'photo', id: 'ig' + it.index,
+          video_url: `${base}/v/${encodeURIComponent(token)}.mp4`,
+          mime_type: v.mime || 'video/mp4',
+          title: (d.author && d.author.username) || 'Instagram',
+          thumb_url: d.thumbnail ? ig.thumbUrl(d.thumbnail) : undefined,
+          caption: '📸 Instagram',
+          reply_markup: kb([[G('🎵 ' + t(lang, 'ig_recognize'), 'igi:' + Buffer.from(q).toString('base64url').slice(0, 50))]]),
+        });
+      }
+      if (!results.length) results.push({ type: 'article', id: 'x', title: t(lang, 'insta_none'), input_message_content: { message_text: 'Instagram' } });
+      return ctx.answerInlineQuery(results, { cache_time: 60 });
+    } catch (_) { return ctx.answerInlineQuery([], { cache_time: 10 }); }
+  }
+
   if (q.length < 2) return ctx.answerInlineQuery([], { cache_time: 60 });
   try {
-    const d = await sc.search(q, 1, ctx.lang);
-    const results = (d.results || []).slice(0, 10).map((tr, i) => {
+    const d = await sc.search(q, 1, lang);
+    const results = [];
+    for (const [i, tr] of (d.results || []).slice(0, 10).entries()) {
       const sid = sc.sidOf(tr);
-      return {
-        type: 'article', id: 'sc' + sid + '_' + i,
-        title: `${tr.artist} — ${tr.title}`,
-        description: `${tr.duration || ''} · ${tr.genre || ''}`,
-        input_message_content: { message_text: `🎵 ${tr.artist} — ${tr.title}\nhttps://t.me/${config.botUsername}?start=t_${sid}` },
-        reply_markup: kb([[URLB(t(ctx.lang, 'inline_open'), `https://t.me/${config.botUsername}?start=t_${sid}`)]]),
-        thumb_url: tr.cover,
-      };
-    });
-    await ctx.answerInlineQuery(results, { cache_time: 120 });
+      const cached = store.get('file_id_cache', sid);
+      if (cached && cached.file_id && cached.v === 'v2') {
+        results.push({ type: 'audio', id: 'c' + sid, audio_file_id: cached.file_id, caption: `🎵 ${esc(tr.artist)} — ${esc(tr.title)}` });
+      } else {
+        const token = signMedia('a', sid, 1800);
+        results.push({
+          type: 'audio', id: 's' + sid + '_' + i,
+          audio_url: `${base}/m/${encodeURIComponent(token)}.mp3`,
+          title: tr.title || 'Music',
+          performer: tr.artist || '',
+          caption: `🎵 <b>${esc(tr.title || '')}</b>\n🎤 ${esc(tr.artist || '')}${tr.duration ? `\n⏱ ${esc(tr.duration)}` : ''}`,
+          parse_mode: 'HTML',
+          audio_duration: tr.duration_ms ? Math.round(tr.duration_ms / 1000) : undefined,
+          thumb_url: tr.cover ? sc.coverUrl(tr.cover) : undefined,
+        });
+      }
+    }
+    await ctx.answerInlineQuery(results.slice(0, 50), { cache_time: 90 });
   } catch (_) { await ctx.answerInlineQuery([], { cache_time: 10 }); }
 });
+
+// ── signed media proxy (/m/ = audio, /v/ = insta video) ────────────────────
+const cryptoMod = require('node:crypto');
+function signMedia(kind, id, ttl = 3600) {
+  const exp = Math.floor(Date.now() / 1000) + ttl;
+  const payload = `${kind}.${id}.${exp}`;
+  const sig = cryptoMod.createHmac('sha256', config.inlineSignSecret).update(payload).digest('base64url');
+  return `${id}.${exp}.${sig}`;
+}
+function verifyMedia(kind, token) {
+  const parts = token.split('.');
+  if (parts.length < 3) return null;
+  const sig = parts.pop(), exp = parts.pop(), id = parts.join('.');
+  if (Date.now() / 1000 > Number(exp)) return null;
+  const expect = cryptoMod.createHmac('sha256', config.inlineSignSecret).update(`${kind}.${id}.${exp}`).digest('base64url');
+  return cryptoMod.timingSafeEqual(Buffer.from(sig), Buffer.from(expect)) ? { id } : null;
+}
+
+async function serveSignedMedia(req, res, urlPath) {
+  const kind = urlPath.startsWith('/m/') ? 'a' : 'v';
+  const token = decodeURIComponent(urlPath.slice(3)).replace(/\.(mp3|m4a|mp4)$/, '');
+  const v = verifyMedia(kind, token);
+  if (!v) { res.writeHead(403); return res.end(); }
+  const upstream = kind === 'a'
+    ? sc.streamUrl(v.id)
+    : v.id; // 'v' tokens carry the full insta download url (signed)
+  const fwdHeaders = {};
+  if (req.headers.range) fwdHeaders.range = req.headers.range;
+  const https = require('node:https');
+  const u = new URL(upstream);
+  return new Promise((resolve) => {
+    const pr = https.request(u, { method: req.method === 'HEAD' ? 'HEAD' : 'GET', headers: fwdHeaders }, (ur) => {
+      if (ur.statusCode >= 400 && kind === 'a') {
+        // download endpoint may 403 on DRM; stream endpoint is tried by caller via two tokens anyway
+      }
+      res.writeHead(ur.statusCode, {
+        'content-type': ur.headers['content-type'] || (kind === 'a' ? 'audio/mpeg' : 'video/mp4'),
+        ...(ur.headers['content-length'] ? { 'content-length': ur.headers['content-length'] } : {}),
+        ...(ur.headers['content-range'] ? { 'content-range': ur.headers['content-range'] } : {}),
+        'accept-ranges': 'bytes', 'cache-control': 'public, max-age=300',
+      });
+      if (req.method === 'HEAD') { ur.resume(); res.end(); return resolve(); }
+      ur.pipe(res); ur.on('end', resolve);
+    });
+    pr.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); resolve(); });
+    pr.setTimeout(30000, () => { pr.destroy(); if (!res.headersSent) res.writeHead(504); res.end(); resolve(); });
+    pr.end();
+  });
+}
 
 // ---------- error ----------
 bot.catch((err) => log.error('bot error', err.message));
@@ -564,6 +656,10 @@ function makeServer() {
       reply(200, { ok: true });
       setImmediate(() => channel.cronTick(bot.api).catch((e) => log.error('cron', e.message)));
       return;
+    }
+    // ── signed media proxies for inline mode ───────────────────────────────
+    if (url.startsWith('/m/') || url.startsWith('/v/')) {
+      return serveSignedMedia(req, res, url).catch(() => { if (!res.headersSent) reply(502, { ok: false }); });
     }
     if (req.method !== 'POST' || url !== config.webhookPath) return reply(404, { ok: false });
     if (req.headers['x-telegram-bot-api-secret-token'] !== config.webhookSecret) return reply(403, { ok: false });

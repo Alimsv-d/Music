@@ -4,6 +4,7 @@ const log = require('../core/log');
 const rl = require('../core/ratelimit');
 const { store, i18n, isOwner, getPanel, setPanel } = require('../core/context');
 const { t, esc, iso, num, dateFmt, dateGreg, vtruncate } = i18n;
+const { fmt, f, e } = require('../core/fmt');
 const { kb, G, B, R, URLB, btn } = require('./keyboard');
 const panel = require('./panel');
 const sc = require('../services/soundcloud');
@@ -28,12 +29,13 @@ async function answer(ctx, text, alert) { if (ctx.callbackQuery) { try { await c
 panel.register('menu', async (ctx, p, lang) => {
   const own = isOwner(ctx.from.id);
   const rows = [
-    [B(t(lang, 'menu_favorites'), 'm:fav'), B(t(lang, 'menu_history'), 'm:hist')],
-    [B(t(lang, 'menu_new'), 'm:new'), B(t(lang, 'menu_lang'), 'm:lang')],
-    [B(t(lang, 'menu_support'), 'm:support'), B(t(lang, 'menu_help'), 'm:help')],
+    [URLB(t(lang, 'menu_addgroup'), `https://t.me/${config.botUsername}?startgroup=true&admin=delete_messages+pin_messages`)],
+    [URLB(t(lang, 'menu_channel'), `https://t.me/${String(config.channel).replace('@', '')}`), B(t(lang, 'menu_lang'), 'm:lang')],
+    [B(t(lang, 'menu_help'), 'm:help'), B(t(lang, 'menu_support'), 'm:support')],
   ];
-  if (own) rows.push([G(t(lang, 'menu_admin'), 'a:panel')]);
-  return { text: t(lang, 'welcome', { name: esc(ctx.from.first_name || 'دوست') }), keyboard: kb(rows) };
+  if (own) rows.push([B(t(lang, 'menu_admin'), 'a:panel')]);
+  const welcome = String(t(lang, 'welcome', { name: '' })).replace('{bot}', ctx.botUsername || config.botUsername);
+  return { text: fmt(welcome.replace('{name}', e(ctx.from.first_name || 'دوست'))), keyboard: kb(rows) };
 });
 
 panel.register('help', async (ctx, p, lang) => ({

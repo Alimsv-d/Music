@@ -2,7 +2,7 @@
 module.exports = {
   meta: { name: '中文', reviewed: false, rtl: false },
   strings: {
-    welcome: '🎧 你好 {name}！\n\n欢迎使用 <b>Music</b> 🎶\n\n🔍 发送歌曲名或歌手名\n🎤 发送语音/视频识别歌曲\n📸 发送 Instagram 链接进行下载',
+    welcome: '🎧 **Music** | 音乐助手\n\n你好 {name}！发送任意内容，我来处理 👇\n\n🔎 **歌手或歌曲名** ← 音乐文件\n🎼 **歌词一行** ← 找歌\n🎤 **语音、视频或音频** ← 识别歌曲\n📸 **Instagram 链接** ← 视频+音乐\n\n> 💡 在任何聊天中输入 `@{bot} 歌曲名` 即可直接获取文件。',
     main_menu: '🎧 主菜单',
     ask_query: '发送歌曲名、歌手名或 SoundCloud 链接：', ask_insta: '发送公开 Instagram 帖子或 Reels 链接：', ask_voice: '发送语音、音频或视频：', searching: '⏳ 正在搜索…', uploading: '正在上传…', downloading: '⏳ 正在下载…', recognizing: '⏳ 正在识别…', processing: '⏳ 正在处理…', no_results: '❌ 没有找到结果，请尝试其他关键词。', error_generic: '⚠️ 出错了，请稍后再试。', error_service: '⚠️ 服务暂时不可用。', error_not_downloadable: '⚠️ 此曲目无法下载。', error_too_large: '⚠️ 文件过大。', error_timeout: '⚠️ 请求超时。', banned: '🚫 账号已被封禁。', maintenance: '🛠 机器人正在更新，请稍后再来。', rate_limited: '⏳ 请稍等 {wait} 再试。', wait_seconds: { other: '{n} 秒' }, wait_minutes: { other: '{n} 分钟' }, wait_hours: { other: '{n} 小时' },
     results_title: '“{q}”的搜索结果', page_of: '{a}/{b}', prev: '⬅️', next: '➡️', dl: '🟢 下载', lyrics: '🔵 歌词', link: '🔗 链接', similar: '🔵 相似歌曲', fav_add: '⭐ 添加收藏', fav_del: '⭐ 取消收藏', favorites_title: '⭐ 我的收藏', favorites_empty: '暂无收藏。', history_title: '🕘 最近记录', history_empty: '暂无历史记录。', track_page: '🎵 <b>{title}</b>\n👤 {artist}\n📅 {date}\n⏱ {duration}\n🏷 {genre}\n🎧 {plays}', no_lyrics: '未找到歌词。', recognize_result: '🎤 <b>{title}</b>\n👤 {artist}\n💿 {album}\n📅 {year}\n🎯 置信度：{conf}%', recognize_none: '❌ 未能识别歌曲，请发送更清晰的音频。', recognize_badformat: '⚠️ 不支持此格式，请发送语音、MP3 或 WAV。', insta_result: '📸 <b>{type}</b>\n👤 {author}\n📝 {caption}', ig_recognize: '识别并下载歌曲',

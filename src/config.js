@@ -36,6 +36,7 @@ const config = {
   webhookSecret: process.env.WEBHOOK_SECRET || '',
   cronSecret: process.env.CRON_SECRET || '',
   heavyAudioUrl: process.env.HEAVY_AUDIO_URL || '',
+  inlineSignSecret: process.env.INLINE_SIGN_SECRET || process.env.CRON_SECRET || '',
   dataDir: process.env.DATA_DIR || path.join(__dirname, '..', 'data'),
   tmpDir: process.env.TMP_DIR || path.join(__dirname, '..', 'tmp'),
   port: Number(process.env.PORT || 0), // 0 => let cPanel/Passenger assign via PORT env
