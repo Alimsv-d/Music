@@ -34,7 +34,7 @@ export class Shazam {
       method: "POST",
       timeout: this.timeout,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ query, limit, lyrics: false }),
+       body: JSON.stringify({ query, limit, lyrics: true }),
     });
     return data.data || data;
   }

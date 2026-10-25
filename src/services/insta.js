@@ -58,17 +58,21 @@ export class Insta {
   _normWorker(d, url) {
     const shortcode = d.shortcode || "";
     const items = (d.items || []).map((it, i) => {
-      const best = (it.variants || [])[0] || {};
+      const variants = it.variants || [];
+      // Prefer actual video variants for reels; do not mistake preview images
+      // for the downloadable media item.
+      const best = it.type === "video"
+        ? (variants.find((v) => /video/i.test(v.mime || "") || v.has_audio) || variants[0] || {})
+        : (variants.find((v) => /image/i.test(v.mime || "")) || variants[0] || {});
       return {
-        type: it.type === "video" ? "video" : "image",
-        index: i,
+        type: it.type === "video" || /video/i.test(best.mime || "") ? "video" : "image",
+        index: Number.isInteger(it.index) ? it.index : i,
         thumbnail: it.thumbnail || d.thumbnail || null,
         url: best.url || null,
         width: best.width, height: best.height,
         size: best.size, mime: best.mime,
         has_audio: best.has_audio !== false,
-        // Proxy through insta-worker to avoid exposing expiring CDN urls to TG.
-        proxyUrl: this.downloadUrl(url, i),
+        proxyUrl: this.downloadUrl(url, Number.isInteger(it.index) ? it.index : i, best.quality || "best"),
       };
     });
     return {

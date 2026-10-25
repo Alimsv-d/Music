@@ -90,12 +90,18 @@ async function pageSizeOf(ctx) {
   return Math.max(5, Math.min(20, parseInt(await ctx.cfg("page_size", ctx.env.PAGE_SIZE || 10), 10) || 10));
 }
 
+function looksLikeManifest(u8) {
+  if (!u8 || u8.length < 7) return false;
+  const head = new TextDecoder().decode(u8.subarray(0, 256));
+  return head.startsWith("{") || /^#EXTM3U/i.test(head) || head.startsWith("<?xml") || head.startsWith("<!DOCTYPE");
+}
+
 /** Slim a Track for KV storage in a search handle. */
 function compact(tr) {
   return {
     id: tr.id, source: tr.source, title: tr.title, artist: tr.artist,
     album: tr.album, year: tr.year, duration_ms: tr.duration_ms,
-    artwork: tr.artwork, downloadUrl: tr.downloadUrl, pageUrl: tr.pageUrl,
+    artwork: tr.artwork, downloadUrl: tr.downloadUrl, streamUrl: tr.streamUrl, pageUrl: tr.pageUrl,
   };
 }
 
@@ -138,20 +144,23 @@ export async function deliverTrack(ctx, msg, trackStub, lang, editCb) {
     const maxBytes = (+ctx.env.MAX_UPLOAD_MB || 50) * 1024 * 1024;
     let bytes = null, ext = "mp3", mime = "audio/mpeg", tooBig = false;
     try {
-      const r = await fetch(tr.downloadUrl, { headers: { "user-agent": "music-bot" } });
-      const cl = +(r.headers.get("content-length") || 0);
-      const ct = r.headers.get("content-type") || "";
-      if (ct.includes("mp4") || ct.includes("aac") || ct.includes("m4a")) { ext = "m4a"; mime = "audio/mp4"; }
-      if (r.status === 200 && r.body) {
-        if (cl && cl > maxBytes) {
-          tooBig = true;
-        } else {
-          bytes = new Uint8Array(await r.arrayBuffer());
+      const urls = [tr.downloadUrl, tr.streamUrl].filter(Boolean);
+      for (const url of urls) {
+        const r = await fetch(url, { headers: { "user-agent": "music-bot", accept: "audio/*,*/*;q=0.8" } });
+        const cl = +(r.headers.get("content-length") || 0);
+        const ct = (r.headers.get("content-type") || "").toLowerCase();
+        if (ct.includes("mp4") || ct.includes("aac") || ct.includes("m4a")) { ext = "m4a"; mime = "audio/mp4"; }
+        if (r.status === 200 && r.body) {
+          if (cl && cl > maxBytes) { tooBig = true; continue; }
+          const head = await r.arrayBuffer();
+          const u8 = new Uint8Array(head);
+          if (looksLikeManifest(u8) || u8.length < 1024) { tooBig = true; continue; }
+          bytes = u8;
           if (bytes.length > maxBytes) tooBig = true;
+          if (!tooBig) break;
         }
-      } else {
-        tooBig = true;
       }
+      if (!bytes) tooBig = true;
     } catch (e) {
       await ctx.store.logError({ where: "dl", msg: e.message });
       tooBig = true;

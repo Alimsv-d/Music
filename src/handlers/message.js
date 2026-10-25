@@ -163,9 +163,16 @@ export async function handleMessage(ctx, msg) {
 
   // ── plain text ────────────────────────────────────────────────────────
   if (isGroup) {
-    // In groups, plain text only triggers via /music or reply — not free text,
-    // to avoid the bot responding to every message.
-    return;
+    // Privacy-mode friendly interaction: respond only when explicitly addressed
+    // by a mention, a reply to the bot, or a recognized trigger command.
+    const botName = (ctx.env.BOT_USERNAME || "").toLowerCase();
+    const mentioned = botName && text.toLowerCase().includes(`@${botName}`);
+    const replied = Boolean(msg.reply_to_message?.from?.is_bot);
+    if (!mentioned && !replied) return;
+    const query = text.replace(new RegExp(`@${botName}`, "ig"), "").trim();
+    if (!query) return;
+    if (/^(متن|ترانه|lyrics?)\s+/i.test(query)) return handleLyricsSnippet(ctx, msg, query.replace(/^(متن|ترانه|lyrics?)\s+/i, ""));
+    return handleSearch(ctx, msg, query);
   }
 
   if (!(await enforceJoin(ctx, msg, lang))) return;

@@ -33,22 +33,22 @@ export async function handleInstaLink(ctx, msg, url) {
   const support = await ctx.cfg("support_url", ctx.env.DEFAULT_SUPPORT_URL);
   const baseMarkup = kb([[{ text: "📢 " + (ctx.env.OWNER_USERNAME || "channel"), url: `https://t.me/${(ctx.env.OWNER_USERNAME || "AliMsvD").replace(/^@/, "")}` }]]);
 
-  // Send media. Multi-item -> media group.
-  let sent = null;
   const items = resolved.items;
+  // Prefer a video item (not its preview image) as the primary delivery.
   const videoItem = items.find((i) => i.type === "video" && i.has_audio);
+  const primary = videoItem || items.find((i) => i.type === "video") || items[0];
 
   if (items.length > 1) {
-    const media = items.slice(0, 10).map((it, i) => ({
+    const group = items.slice(0, 10).map((it, i) => ({
       type: it.type === "video" ? "video" : "photo",
       media: it.url || it.proxyUrl,
-      caption: i === 0 ? caption : undefined,
+      caption: it === primary ? caption : undefined,
       parse_mode: "HTML",
     }));
-    sent = await ctx.tg.sendMediaGroup(chatId, media).catch(() => null);
-    if (!sent) sent = await sendSingle(ctx, chatId, items[0], caption, baseMarkup, msg);
+    sent = await ctx.tg.sendMediaGroup(chatId, group).catch(() => null);
+    if (!sent) sent = await sendSingle(ctx, chatId, primary, caption, baseMarkup, msg);
   } else {
-    sent = await sendSingle(ctx, chatId, items[0], caption, baseMarkup, msg);
+    sent = await sendSingle(ctx, chatId, primary, caption, baseMarkup, msg);
   }
 
   // Background: try to recognize the audio of the first video item.

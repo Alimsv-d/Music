@@ -103,18 +103,27 @@ async function dlProxy(ctx, path, request) {
   const id = idParts.join(":");
   if (source !== "sc" || !id) return new Response("bad id", { status: 400 });
 
-  const upstream = `${ctx.env.SOUNDCLOUD_API_URL.replace(/\/$/, "")}/api/v1/download?id=${encodeURIComponent(id)}`;
-  const headers = {};
+  const base = ctx.env.SOUNDCLOUD_API_URL.replace(/\/$/, "");
+  const candidates = [
+    `${base}/api/v1/download?id=${encodeURIComponent(id)}`,
+    `${base}/api/v1/stream?id=${encodeURIComponent(id)}`,
+  ];
+  const requestHeaders = {};
   const range = request.headers.get("range");
-  if (range) headers["range"] = range;
+  if (range) requestHeaders.range = range;
 
-  let res;
-  try {
-    res = await fetch(upstream, { headers });
-  } catch {
-    return new Response("upstream", { status: 502 });
+  let res = null;
+  for (const upstream of candidates) {
+    try {
+      const candidate = await fetch(upstream, { headers: requestHeaders });
+      const ct = (candidate.headers.get("content-type") || "").toLowerCase();
+      // /download can return a JSON/HLS manifest for browser-mode tracks.
+      if ((!candidate.ok && candidate.status !== 206) || ct.includes("application/json") || ct.includes("mpegurl") || ct.includes("text/plain")) continue;
+      res = candidate;
+      break;
+    } catch {}
   }
-  if (!res.ok && res.status !== 206) return new Response("upstream " + res.status, { status: 502 });
+  if (!res) return new Response("upstream unavailable", { status: 502 });
 
   const out = new Headers();
   out.set("content-type", res.headers.get("content-type") || "audio/mpeg");

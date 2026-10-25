@@ -7,3 +7,6 @@ node_modules
 cleanup
 .cleanup_trash
 package-lock.json.tmp
+
+.env
+data/
