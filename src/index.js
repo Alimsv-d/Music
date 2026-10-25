@@ -1,6 +1,7 @@
 'use strict';
 const { Bot, webhookCallback, InputFile } = require('grammy');
 const http = require('node:http');
+const fs = require('node:fs');
 const config = require('./config');
 const log = require('./core/log');
 const rl = require('./core/ratelimit');
@@ -729,8 +730,9 @@ async function serveSignedMedia(req, res, urlPath) {
   await new Promise((resolve) => {
     const rs = fs.createReadStream(hit.path, { start, end });
     let sent = 0;
+    rs.once('open', () => log.debug('inline file opened', { kind, start, end }));
     rs.on('data', (chunk) => { sent += chunk.length; });
-    rs.on('error', () => { if (!res.headersSent) res.writeHead(500); res.destroy(); resolve(); });
+    rs.on('error', (e) => { log.error('inline file read error', { kind, message: e.message }); if (!res.headersSent) res.writeHead(500); res.destroy(); resolve(); });
     rs.on('end', () => { log.info('inline media complete', { kind, id: signed.id, sent, total_ms: Date.now()-started }); resolve(); });
     rs.pipe(res);
   });

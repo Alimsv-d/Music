@@ -28,7 +28,7 @@ function evict() {
 }
 function cached(key, ext) {
   const p=pathFor(key,ext);
-  try { const s=fs.statSync(p); if(Date.now()-s.mtimeMs>TTL){fs.unlinkSync(p);return null;} return {path:p,size:s.size,mtime:s.mtimeMs,ext}; } catch(_){return null;}
+  try { const s=fs.statSync(p); if(Date.now()-s.mtimeMs>TTL){fs.unlinkSync(p);return null;} try{fs.utimesSync(p,new Date(),new Date())}catch(_){} return {path:p,size:s.size,mtime:Date.now(),ext}; } catch(_){return null;}
 }
 async function withLock(key, fn) {
   if(locks.has(key)) return locks.get(key);
