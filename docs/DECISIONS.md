@@ -35,3 +35,9 @@
 - Force-join is now multi-channel: owner manages a list via 🛠 → ⚙️ → 🔒 عضویت اجباری (add/remove); user must join ALL listed channels.
 - Audio messages now carry a clean caption (title, artist, duration/genre/plays).
 - Group limitation documented: the bot runs in Telegram privacy mode (`can_read_all_group_messages=false`), so in groups it only sees commands/mentions/replies unless privacy is disabled in BotFather (/setprivacy → Disable). Command/mention/reply paths are verified working.
+
+## Repository split (important)
+Two distinct codebases exist and MUST NOT be force-merged:
+- `Alimsv-d/Music` (branch `main`, GitHub) = the Cloudflare Workers bot (ESM, KV store, /dl proxy, wrangler). Push updates here.
+- Local `cpanel-app` branch + `~/music` working tree = the LIVE cPanel Node bot (CommonJS, grammY, node:http, node:sqlite) currently serving Telegram on `DevCoder.ir`.
+The working tree intentionally holds the cPanel app; `main`/`master` track the worker repo. Do not `git reset --hard` to the worker origin in this directory — it replaces the running app's runtime and breaks production.
