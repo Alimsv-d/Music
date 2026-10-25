@@ -18,5 +18,11 @@ Track: live cPanel Node app (`~/music`, branch `cpanel-app`). GitHub `Alimsv-d/M
 - [x] i18n parity
 - [x] final local/live regression, secret scan, npm audit
 - [x] push: `cpanel-app` branch at `9a0232c`; worker `main` at `4b90fb8`
-- [ ] manual Telegram inline client test; full 200-load test; complete 619s HLS under upload budget
+- [x] manual Telegram inline client test; full 200-load test; complete 619s HLS under upload budget
+- [x] R1 canonical public base + local validated media cache for inline (HEAD/GET/Range verified)
+- [x] R2 encrypted-source detection + auto-alternate + RMS validation (forensics documented)
+- [x] R3 cleanTrackMeta (artist not uploader) + uniform bidi labels
+- [x] R4 search engine (variants/ranking/lyrics/error-vs-empty/learning)
+- [x] R5 button color semantics + UI polish
+- [x] push: `cpanel-app` at ac6ddfd; worker `main` at 4b90fb8
 
