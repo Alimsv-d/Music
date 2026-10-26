@@ -86,10 +86,10 @@ Push to `main`, or repo → **Actions → deploy → Run workflow**.
 
 The workflow has two modes:
 
-- `run_setup = false` (default): deploys and checks the Worker health only; it
+- `activate = false` (default): deploys and checks the Worker health only; it
   does **not** change Telegram's current webhook. Use this first for a safe
   Cloudflare smoke test.
-- `run_setup = true`: deploys and then calls `/setup`, which registers the
+- `activate = true`: deploys and then calls `/setup`, which registers the
   Cloudflare Worker as Telegram's webhook and replaces the current webhook.
   Choose this only for the final cutover from cPanel.
 

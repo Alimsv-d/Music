@@ -6,26 +6,17 @@
 #     repos, so this workflow is how you deploy).
 #   • push to main       -> auto-deploy.
 #
-# Required repo secrets (Settings > Secrets and variables > Actions):
-#   CLOUDFLARE_API_TOKEN   Workers Scripts Edit + Workers KV Storage Edit +
-#                          Account Settings Read (see README)
-#   CLOUDFLARE_ACCOUNT_ID  from dash.cloudflare.com
-#   BOT_TOKEN              from @BotFather
-#   WEBHOOK_SECRET         random 32+ char string
-#   LINK_SECRET            random 32+ char string
-#   ADMIN_SETUP_KEY        random 32+ char string (guards /setup)
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, BOT_TOKEN,
+#   WEBHOOK_SECRET, LINK_SECRET, ADMIN_SETUP_KEY
 
 name: deploy
 
 on:
   workflow_dispatch:
     inputs:
-      run_setup:
+      activate:
         description: "Activate the Cloudflare bot (set Telegram webhook + commands; replaces the current webhook)"
-        type: boolean
-        default: false
-      reset_webhook:
-        description: "Force re-register the webhook even if already set"
         type: boolean
         default: false
   push:
@@ -53,8 +44,25 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Validate required deployment secrets
+        env:
+          HAS_CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          HAS_CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+          HAS_BOT_TOKEN: ${{ secrets.BOT_TOKEN != '' }}
+          HAS_WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET != '' }}
+          HAS_LINK_SECRET: ${{ secrets.LINK_SECRET != '' }}
+          HAS_SETUP_KEY: ${{ secrets.ADMIN_SETUP_KEY != '' }}
+        run: |
+          set -eu
+          for name in HAS_CF_TOKEN HAS_CF_ACCOUNT HAS_BOT_TOKEN HAS_WEBHOOK_SECRET HAS_LINK_SECRET HAS_SETUP_KEY; do
+            if [ "${!name}" != "true" ]; then
+              echo "::error::Required repository secret is missing: ${name#HAS_}"
+              exit 1
+            fi
+          done
+
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Unit tests
         run: npm test --silent
@@ -62,40 +70,56 @@ jobs:
       - name: Secret scan (fail if any secret is committed)
         run: node scripts/secret-scan.mjs
 
-      - name: Provision KV namespace + inject id
-        run: |
-          npx wrangler kv namespace create music-bot-kv --json > /tmp/kv.json 2>/dev/null || true
-          KV_ID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('/tmp/kv.json')).id||'')}catch{console.log('')}")
-          if [ -z "$KV_ID" ]; then
-            KV_ID=$(npx wrangler kv namespace list | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const a=JSON.parse(d.replace(/^[^{[]*/,''));const f=a.find(n=>n.title&&n.title.includes('music-bot-kv'))||a[0];console.log(f?f.id:'')})")
-          fi
-          if [ -n "$KV_ID" ]; then
-            node -e "const fs=require('fs');let s=fs.readFileSync('wrangler.jsonc','utf8');if(!/\"id\"\s*:\s*\"[0-9a-f]{32}\"/.test(s)){s=s.replace(/(\"binding\"\s*:\s*\"KV\"\s*)/,'\$1,\"id\":\"'+process.env.KV_ID+'\"');fs.writeFileSync('wrangler.jsonc',s)}console.log('kv id',process.env.KV_ID)" KV_ID="$KV_ID"
-          fi
+      - name: Provision exact KV namespace
+        run: node scripts/ensure-kv.mjs
 
       - name: Upload secrets to the worker
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          LINK_SECRET: ${{ secrets.LINK_SECRET }}
+          ADMIN_SETUP_KEY: ${{ secrets.ADMIN_SETUP_KEY }}
+          SHAZAM_BACKEND_URL: ${{ secrets.SHAZAM_BACKEND_URL }}
+          SHAZAM_BACKEND_KEY: ${{ secrets.SHAZAM_BACKEND_KEY }}
         run: |
-          echo "${{ secrets.BOT_TOKEN }}"      | npx wrangler secret put BOT_TOKEN
-          echo "${{ secrets.WEBHOOK_SECRET }}" | npx wrangler secret put WEBHOOK_SECRET
-          echo "${{ secrets.LINK_SECRET }}"    | npx wrangler secret put LINK_SECRET
-          echo "${{ secrets.ADMIN_SETUP_KEY }}"| npx wrangler secret put ADMIN_SETUP_KEY
+          printf '%s' "$BOT_TOKEN"      | npx wrangler secret put BOT_TOKEN
+          printf '%s' "$WEBHOOK_SECRET" | npx wrangler secret put WEBHOOK_SECRET
+          printf '%s' "$LINK_SECRET"    | npx wrangler secret put LINK_SECRET
+          printf '%s' "$ADMIN_SETUP_KEY"| npx wrangler secret put ADMIN_SETUP_KEY
+          [ -n "$SHAZAM_BACKEND_URL" ] && printf '%s' "$SHAZAM_BACKEND_URL" | npx wrangler secret put SHAZAM_BACKEND_URL || true
+          [ -n "$SHAZAM_BACKEND_KEY" ] && printf '%s' "$SHAZAM_BACKEND_KEY" | npx wrangler secret put SHAZAM_BACKEND_KEY || true
 
       - name: Deploy worker
         id: deploy
+        env:
+          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
         run: |
+          set -e
           OUT=$(npx wrangler deploy 2>&1)
           echo "$OUT"
-          URL=$(echo "$OUT" | grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' | head -1)
+          URL="${{ vars.PUBLIC_URL }}"
+          if [ -z "$URL" ]; then
+            URL=$(echo "$OUT" | grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' | head -1)
+          fi
+          if [ -z "$URL" ]; then
+            echo "::error::Could not determine worker URL. Set vars.PUBLIC_URL or ensure wrangler deploy prints a workers.dev URL."
+            exit 1
+          fi
           echo "worker_url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: Run /setup (activate Telegram webhook)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_setup == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.activate == true }}
         run: |
           URL="${{ steps.deploy.outputs.worker_url }}"
           KEY="${{ secrets.ADMIN_SETUP_KEY }}"
           if [ -z "$URL" ]; then echo "no worker url detected"; exit 1; fi
-          curl -fsS "${URL}/setup?key=${KEY}" | tee /tmp/setup.json
-          node -e "const r=require('/tmp/setup.json');process.exit(r.ok?0:1)"
+          RESP=$(curl -fsS "${URL}/setup?key=${KEY}")
+          echo "$RESP" > /tmp/setup.json
+          node -e "
+            const r=require('/tmp/setup.json');
+            if(!r.ok){ console.error(JSON.stringify(r,null,2)); process.exit(1) }
+            console.log('setup ok:', JSON.stringify(r.steps||{}))
+          "
 
       - name: Verify worker health
         run: |
@@ -104,16 +128,17 @@ jobs:
           curl -fsS "${URL}/health" | tee /tmp/health.json
 
       - name: Verify Telegram webhook (only when activated)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_setup == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.activate == true }}
         run: |
           URL="${{ steps.deploy.outputs.worker_url }}"
-          sleep 2
           curl -fsS "${URL}/health" | tee /tmp/health.json
           node -e "
             const h=require('/tmp/health.json');
             const w=h.webhook||{};
-            if(!w.url){console.error('webhook url empty');process.exit(1)}
-            console.log('webhook:',w.url,'pending:',w.pending,'error:',w.error);
+            const expected='${URL}/webhook';
+            if(w.url!==expected){ console.error('webhook mismatch:',w.url,'!=',expected); process.exit(1) }
+            if(w.error){ console.error('telegram webhook error:',w.error); process.exit(1) }
+            console.log('webhook ok:',w.url)
           "
 
       - name: Job summary
@@ -126,5 +151,5 @@ jobs:
             echo "| Step | Result |"
             echo "|---|---|"
             echo "| deploy | ✅ |"
-            echo "| /setup | ${{ inputs.run_setup && '✅' || 'skipped' }} |"
+            echo "| /setup | ${{ inputs.activate && '✅' || 'skipped' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
