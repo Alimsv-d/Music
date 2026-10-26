@@ -93,6 +93,11 @@ async function downloadAndSend(ctx, tr, lang, opts = {}) {
   try { await _downloadAndSend(ctx, tr, lang, opts); }
   finally { require('../core/perf').record('send', Date.now() - t0); }
 }
+function streamFileUrl(sid, title, performer) {
+  const slug = (performer ? performer + ' - ' : '') + title;
+  return sc.fileUrl(sid, slug || 'track', 'mp3');
+}
+
 async function _downloadAndSend(ctx, tr, lang, opts = {}) {
   const store = getStore(), sid = sc.sidOf(tr), meta = require('../services/trackMeta').cleanTrackMeta(tr),
     cacheKey = `${sid}|${meta.artist}|${meta.title}|${META_VERSION}`, chatId = ctx.chat.id,
@@ -114,7 +119,23 @@ async function _downloadAndSend(ctx, tr, lang, opts = {}) {
     } catch (_) { store.del('file_id_cache', cacheKey); }
   } else if (key) store.del('file_id_cache', cacheKey);
 
-  // 2) in-memory fetch -> normalise to progressive/seekable container -> upload
+  // 2) URL-send the worker's validated progressive file (zero bytes through the
+  //    bot). Only when the worker v2 /f/ endpoint is up. Falls back to the
+  //    in-memory remux+upload path on any failure.
+  try {
+    const url = streamFileUrl(sid, title, performer);
+    const sent = await ctx.api.sendAudio(chatId, url, { title, performer, duration: expected || undefined, ...share });
+    if (sent && sent.audio && sent.audio.file_id) {
+      store.set('file_id_cache', cacheKey, {
+        file_id: sent.audio.file_id, v: CACHE_VERSION, metaVersion: META_VERSION,
+        artist: performer, title, duration: sent.audio.duration || expected,
+        validated: true, via: 'url' });
+      return;
+    }
+    try { await ctx.api.deleteMessage(chatId, sent.message_id); } catch (_) {}
+  } catch (_) { /* fall through to in-memory */ }
+
+  // 3) in-memory fetch -> normalise to progressive/seekable container -> upload
   const { InputFile } = require('grammy');
   const audio = await normalizeAudio(tr, sid);
   const fname = (`${performer} - ${title}`.replace(/[\\/:*?"<>|]/g, '_').slice(0, 64) || 'track') + '.' + audio.ext;

@@ -221,4 +221,10 @@ async function health() {
   catch (e) { return { ok: false, ms: Date.now() - t0, error: e.code || e.message }; }
 }
 
-module.exports = { search, track, resolveUrl, checkDownload, downloadFile, downloadHls, fetchBuffer, fetchHlsBuffer, fetchTrackBuffer, parseM3U8, streamUrl, downloadUrl, hlsUrl, coverUrl, sidOf, isPlayable, health, ServiceError };
+function fileUrl(idOrSid, slug, ext = 'mp3') {
+  const sid = String(idOrSid).replace(/^sc_/, '');
+  const name = encodeURIComponent((slug || 'track').slice(0, 80));
+  return `${base()}/f/${encodeURIComponent(sid)}/${name}.${ext}`;
+}
+
+module.exports = { search, track, resolveUrl, checkDownload, downloadFile, downloadHls, fetchBuffer, fetchHlsBuffer, fetchTrackBuffer, parseM3U8, streamUrl, downloadUrl, hlsUrl, coverUrl, fileUrl, sidOf, isPlayable, health, ServiceError };

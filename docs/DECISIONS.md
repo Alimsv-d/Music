@@ -137,3 +137,17 @@ Two distinct codebases exist and MUST NOT be force-merged:
   scrape is not viable for reel media bytes. Owner must supply/replace
   `UPSTREAM_URLS` with a live resolver; the worker already supports an ordered
   fallback list via `UPSTREAM_URLS`.
+
+## 2026-10-26 — SoundCloud worker v2 (Phase 2, branch fix/v2-soundcloud)
+- Added `GET /f/<sid>/<slug>.<ext>`: assembles the best HLS transcoding fully in
+  memory, remuxes fMP4 → progressive MP4 in-worker (pure JS, moov-before-mdat,
+  real mvhd/mdhd/stts/stsz/stsc/stco + ©nam/©ART tags). Verified output equals
+  ffmpeg `-c copy +faststart`: 333.473s, all 14362 packets, clean decode.
+- Response carries `Content-Length`, `Accept-Ranges`/206, `ETag`,
+  `Cache-Control: public, max-age=3600`, `Content-Disposition: inline` with
+  UTF-8 `filename*`, `X-Audio-Verified: 1`, `X-Audio-Duration-Ms`. Tracks needing
+  more subrequests than the free-plan budget return `413 TOO_LONG_FOR_PLAN`.
+- The deploy workflow gained an `env: staging|production` input; staging deploys
+  to `<name>-staging`. No GitHub API token is stored on the host (git over SSH),
+  so triggering a staging run requires the owner to click "Run workflow" →
+  env=staging on the `fix/v2-soundcloud` branch.
