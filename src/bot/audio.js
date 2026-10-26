@@ -206,6 +206,9 @@ async function processAudio(ctx, fileRef, lang) {
 // seekable Telegram `audio` object (fixes the fMP4 "12-second" bug, F1/F4).
 let mp3Active = 0;
 async function transcodeToMp3(buf, { timeout = 90000, quality = '5', durationSec = null } = {}) {
+  // wait briefly for a free ffmpeg slot instead of hard-failing concurrent sends
+  let waited = 0;
+  while (mp3Active >= 1 && waited < 12000) { await new Promise((r) => setTimeout(r, 120)); waited += 120; }
   if (mp3Active >= 1) { const e = new Error('ffmpeg busy'); e.code = 'FFMPEG_BUSY'; throw e; }
   mp3Active++;
   try {

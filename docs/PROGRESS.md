@@ -152,3 +152,18 @@ Track: live cPanel Node app (`~/music`, branch `cpanel-app`). GitHub `Alimsv-d/M
 - [x] Bot send path now prefers `sendAudio` by worker `/f/…mp3` URL (zero bytes
       through the bot), falls back to in-memory remux+upload. Confirmed prod /f/
       is 404 (not yet deployed) → fallback path verified working (m4a progressive).
+## 2026-10-26 — recognition + send hardening
+- [x] Gallery video (mp4/mov/…) recognition FIXED: MP4 is not streamable so
+      stdin-pipe decode failed → "UNSUPPORTED". Video containers now decode via a
+      temp file in $TMPDIR (seekable), removed after. Verified: a real-song mp4
+      clip → "Reza Bahram - Havaye Del" (conf 83).
+- [x] decodeMedia() picks pipe (audio) vs file (video) automatically; all reel /
+      video / gallery recognition paths (doRecognize, instaRecognize, inline
+      igx) now use it.
+- [x] transcodeToMp3 waits up to 12s for a free ffmpeg slot instead of
+      hard-failing on concurrent downloads.
+- [x] answer() now surfaces alert/error messages as a real reply when there is
+      no callbackQuery — download/recognize failures are no longer silent.
+- [x] Instagram "detected song but file not sent": the rdl/igm/igx buttons route
+      through runDownload → downloadAndSend → MP3 path (variant C). Combined with
+      video-aware decode + URL-fallback this resolves the reported gap.

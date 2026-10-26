@@ -32,7 +32,12 @@ function persianDigits(value) { return String(value).replace(/\d/g, (d) => '۰۱
 async function editOrReply(ctx, text, extra) {
   try { return await ctx.reply(text, { parse_mode: 'HTML', disable_web_page_preview: true, ...(extra || {}) }); } catch (_) { return null; }
 }
-async function answer(ctx, text, alert) { if (ctx.callbackQuery) { try { await ctx.answerCallbackQuery({ text, show_alert: !!alert }); } catch (_) {} } }
+async function answer(ctx, text, alert) {
+  if (ctx.callbackQuery) { try { await ctx.answerCallbackQuery({ text, show_alert: !!alert }); } catch (_) {} return; }
+  // no callback query: surface only alert/error messages as a real reply so
+  // failures are never silent (status toasts like "downloading…" stay quiet).
+  if (alert && text) { try { await ctx.reply(text); } catch (_) {} }
+}
 
 // ============ SCREENS ============
 panel.register('menu', async (ctx, p, lang) => {
