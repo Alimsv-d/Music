@@ -53,13 +53,17 @@ validated progressive file directly.
 
 ---
 
-## 🚀 Deploy — private repo → GitHub Actions
+## 🚀 Deploy — one click to Cloudflare
 
-> ⚠️ This repo is **private**, so the public "Deploy to Cloudflare" button does
-> **not** work. Deployment is done **only** through the GitHub Action below.
-> *(To enable one-click deploy later, the repo would need to be public.)*
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Alimsv-d/Music)
 
-### One-click deploy — everything in the form (no repo secrets needed)
+> The button above takes you to Cloudflare's deploy page — it copies the repo's
+> `wrangler.jsonc`, creates the KV binding, provisions secrets, and deploys the
+> single Worker containing the bot + SoundCloud + Shazam + Instagram services.
+> The README and `deploy.yml` workflow below are the safer, more repeatable way
+> to deploy (they also set the webhook properly).
+
+### One-click deploy via GitHub Actions (recommended)
 
 Repo → **Actions → deploy → Run workflow**, fill the fields and hit **Run**:
 
