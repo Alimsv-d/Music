@@ -21,9 +21,9 @@ on:
   workflow_dispatch:
     inputs:
       run_setup:
-        description: "Run /setup (set webhook + commands) after deploy"
+        description: "Activate the Cloudflare bot (set Telegram webhook + commands; replaces the current webhook)"
         type: boolean
-        default: true
+        default: false
       reset_webhook:
         description: "Force re-register the webhook even if already set"
         type: boolean
@@ -88,8 +88,8 @@ jobs:
           URL=$(echo "$OUT" | grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' | head -1)
           echo "worker_url=$URL" >> "$GITHUB_OUTPUT"
 
-      - name: Run /setup (webhook + commands)
-        if: ${{ inputs.run_setup || github.event_name == 'push' }}
+      - name: Run /setup (activate Telegram webhook)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_setup == true }}
         run: |
           URL="${{ steps.deploy.outputs.worker_url }}"
           KEY="${{ secrets.ADMIN_SETUP_KEY }}"
@@ -97,7 +97,14 @@ jobs:
           curl -fsS "${URL}/setup?key=${KEY}" | tee /tmp/setup.json
           node -e "const r=require('/tmp/setup.json');process.exit(r.ok?0:1)"
 
-      - name: Verify webhook
+      - name: Verify worker health
+        run: |
+          URL="${{ steps.deploy.outputs.worker_url }}"
+          sleep 2
+          curl -fsS "${URL}/health" | tee /tmp/health.json
+
+      - name: Verify Telegram webhook (only when activated)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_setup == true }}
         run: |
           URL="${{ steps.deploy.outputs.worker_url }}"
           sleep 2

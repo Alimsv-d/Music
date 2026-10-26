@@ -82,10 +82,20 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 | `ADMIN_SETUP_KEY` | `openssl rand -hex 16` |
 
 ### 3 — Deploy
-Push to `main`, or repo → **Actions → deploy → Run workflow** (`run_setup` ✓).
-The action will: run tests → create/inject the KV namespace → `wrangler secret
-put` → `wrangler deploy` → call `/setup` (webhook + commands) → verify
-`getWebhookInfo` → print the Worker URL in the summary.
+Push to `main`, or repo → **Actions → deploy → Run workflow**.
+
+The workflow has two modes:
+
+- `run_setup = false` (default): deploys and checks the Worker health only; it
+  does **not** change Telegram's current webhook. Use this first for a safe
+  Cloudflare smoke test.
+- `run_setup = true`: deploys and then calls `/setup`, which registers the
+  Cloudflare Worker as Telegram's webhook and replaces the current webhook.
+  Choose this only for the final cutover from cPanel.
+
+The action will: run tests → create/inject the KV namespace → upload secrets →
+`wrangler deploy` → optionally call `/setup` (webhook + commands) → verify the
+Worker health/webhook and print the Worker URL in the summary.
 
 ### 4 — BotFather checklist (one-time, required)
 ```
