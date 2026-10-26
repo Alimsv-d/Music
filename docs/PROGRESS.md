@@ -181,3 +181,19 @@ Track: live cPanel Node app (`~/music`, branch `cpanel-app`). GitHub `Alimsv-d/M
       are visible instead of silent.
 - [x] Verified on host: full chain query → fetch → remux → mp3 produces valid
       output for real tracks; video-aware decode confirmed.
+
+## 2026-10-26 — DRM/encrypted track handling (root cause of "file not sent")
+- [x] Root cause found with live evidence: Instagram reel resolve + recognize +
+      SC search worked end-to-end (reel `Dai1eHlAfLI` → "Reza Bahram - Yar"
+      conf 83 → playable match sid 2231629814). But that track is a
+      **CENC/DRM-encrypted** HLS source (`pssh/saiz/senc/sinf/frma/schm/tenc`
+      fourccs present). The old path fetched the encrypted bytes and died in
+      ffmpeg (`exit 69`) → no file, silent failure.
+- [x] mp4check now detects CENC/DRM via raw fourcc scan (`encrypted` flag +
+      `reasons.push('encrypted')`).
+- [x] normalizeAudio rejects encrypted sources with code `ENCRYPTED` BEFORE
+      remux/mp3 → `runDownload.tryAlternate` picks the next playable track.
+- [x] Verified: sid 2231629814 & 769921126 → ENCRYPTED; clean track → mp3 ok.
+- [ ] For "Yar" specifically: SC exposes ONLY the encrypted version in results —
+      no un-encrypted alternative exists, so the bot now reports
+      not-downloadable cleanly instead of garbage. Not a bug; a catalog limit.

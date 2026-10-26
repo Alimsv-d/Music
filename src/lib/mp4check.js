@@ -138,6 +138,10 @@ function check(buf, { expectedSeconds = null, toleranceSeconds = 2 } = {}) {
   const moof = moofCount > 0;
   const sidx = !!counts.sidx;
   const mehd = !!counts.mehd;
+  // Common Encryption (CENC/DRM) indicators: these fourccs live inside stsd/
+  // traf (not walked), so scan the raw buffer for the box-type signatures.
+  const raw = buf.toString('latin1', 0, Math.min(buf.length, 4 * 1024 * 1024));
+  const encrypted = /\b(senc|saiz|sinf|frma|schm|tenc|pssh|encv)/.test(raw);
 
   // order: moov must appear before first mdat for a progressive file
   let moovBeforeMdat = null;
@@ -185,7 +189,8 @@ function check(buf, { expectedSeconds = null, toleranceSeconds = 2 } = {}) {
     reasons.push('mvhd-mdhd-mismatch');
   }
 
-  const ok = hasFtyp && hasMoov && hasMdat && !fragmented && moovBeforeMdat !== false &&
+  if (encrypted) reasons.push('encrypted');
+  const ok = hasFtyp && hasMoov && hasMdat && !fragmented && !encrypted && moovBeforeMdat !== false &&
     mvhdDurS != null && mdhdDurS != null && (durationOk !== false);
 
   return {
@@ -194,6 +199,7 @@ function check(buf, { expectedSeconds = null, toleranceSeconds = 2 } = {}) {
     types,
     counts: { moov: counts.moov || 0, mdat: counts.mdat || 0, moof: moofCount, mvex: counts.mvex || 0, sidx: counts.sidx || 0, mehd: counts.mehd || 0 },
     fragmented,
+    encrypted,
     moovBeforeMdat,
     mvhdDurS, mdhdDurS, sttsDurS,
     title, artist,

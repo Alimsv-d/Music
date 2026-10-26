@@ -68,6 +68,17 @@ async function normalizeAudio(tr, sid = sc.sidOf(tr)) {
   const fmt = audioFormat();
   const { remux } = require('../lib/mp4remux');
   const { transcodeToMp3 } = require('./audio');
+  // Encrypted (CENC/DRM) source: bytes are sample-encrypted, so remux/mp3 would
+  // produce garbage. Reject cleanly so runDownload's tryAlternate picks the
+  // next playable track instead of dying in ffmpeg.
+  if (struct.encrypted) {
+    const e = new Error('source is DRM-encrypted'); e.code = 'ENCRYPTED'; throw e;
+  }
+  // Not a parseable MP4 at all (bad bytes / non-media).
+  if (!struct.ok && !struct.types.includes('ftyp')) {
+    const e = new Error('not a parseable mp4 (encrypted/undecodable)');
+    e.code = 'ENCRYPTED'; throw e;
+  }
   // Always normalise to a progressive MP4 first: the fMP4 source has tfdt gaps
   // that make a direct MP3 encode stretch the timeline (435s for a 333s track).
   // From the remuxed buffer the timeline is continuous, so MP3 duration matches.
