@@ -141,10 +141,12 @@ async function setupRoute(request, env, ctx, url) {
     return json({ ok: false, error: "forbidden" }, 403);
   }
   const report = { ok: true, steps: {} };
-  const base = env.PUBLIC_URL || url.origin;
+  const expectedBase = env.PUBLIC_URL || url.origin;
+  const expectedWebhook = `${expectedBase}/webhook`;
+  if (env.PUBLIC_URL && url.origin !== expectedBase) report.warnings = [...(report.warnings || []), "public_url_mismatch"];
 
   try {
-    await ctx.tg.setWebhook(`${base}/webhook`, {
+    await ctx.tg.setWebhook(expectedWebhook, {
       secret_token: env.WEBHOOK_SECRET,
       allowed_updates: ["message", "edited_message", "callback_query", "inline_query", "chosen_inline_result", "my_chat_member", "chat_member"],
       drop_pending_updates: true,
@@ -158,18 +160,34 @@ async function setupRoute(request, env, ctx, url) {
     await ctx.tg.setMyCommands(COMMANDS.private, { type: "all_private_chats" }, "en");
     await ctx.tg.setMyCommands(COMMANDS.group, { type: "all_group_chats" });
     report.steps.commands = "ok";
-  } catch (e) { report.steps.commands = e.message; }
+  } catch (e) { report.steps.commands = e.message; report.ok = false; }
 
   try {
     const desc = `🎧 ${env.BOT_NAME || "Music"} — جستجو، تشخیص و دانلود موزیک\n👨‍💻 ${env.CREATOR_NAME} @${env.OWNER_USERNAME}`;
     await ctx.tg.setMyDescription({ description: desc });
     await ctx.tg.setMyShortDescription({ short_description: "🎧 جستجو و دانلود موزیک / Music search & download" });
     report.steps.description = "ok";
-  } catch (e) { report.steps.description = e.message; }
+  } catch (e) { report.steps.description = e.message; report.ok = false; }
 
   try {
-    report.webhook_info = await ctx.tg.getWebhookInfo();
-  } catch {}
+    const info = await ctx.tg.getWebhookInfo();
+    report.webhook_info = {
+      url: info?.url || null,
+      pending_update_count: info?.pending_update_count || 0,
+      last_error_message: info?.last_error_message || null,
+    };
+    if (info?.url !== expectedWebhook) {
+      report.ok = false;
+      report.steps.webhook_verify = `expected ${expectedWebhook} but got ${info?.url || "none"}`;
+    }
+    if (info?.last_error_message) {
+      report.ok = false;
+      report.steps.webhook_error = info.last_error_message;
+    }
+  } catch (e) {
+    report.ok = false;
+    report.steps.webhook_info = e.message;
+  }
   return json(report, report.ok ? 200 : 500);
 }
 

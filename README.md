@@ -58,34 +58,29 @@ all access is isolated in `src/utils/kv.js`.
 > **not** work. Deployment is done **only** through the GitHub Action below.
 > *(To enable one-click deploy later, the repo would need to be public.)*
 
-### 1 — Create a Cloudflare API token
-`dash.cloudflare.com` → **My Profile → API Tokens → Create Token → Custom**:
+### One-click deploy — everything in the form (no repo secrets needed)
 
-| Permission | Level |
+Repo → **Actions → deploy → Run workflow**, fill the fields and hit **Run**:
+
+| Field | What to paste |
 |---|---|
-| Workers Scripts | **Edit** |
-| Workers KV Storage | **Edit** |
-| Account Settings | **Read** |
-
-Include your account. Save the token.
-
-### 2 — Add repo secrets
-Repo → **Settings → Secrets and variables → Actions → New repository secret**:
-
-| Secret | Value |
-|---|---|
-| `CLOUDFLARE_API_TOKEN` | the token above |
+| `CLOUDFLARE_API_TOKEN` | `dash.cloudflare.com` → API Tokens → Custom: Workers **Edit**, Workers KV **Edit**, Account Settings **Read** |
 | `CLOUDFLARE_ACCOUNT_ID` | dash → Workers → right sidebar |
 | `BOT_TOKEN` | from **@BotFather** |
 | `WEBHOOK_SECRET` | `openssl rand -hex 24` |
 | `LINK_SECRET` | `openssl rand -hex 24` |
 | `ADMIN_SETUP_KEY` | `openssl rand -hex 16` |
+| `SHAZAM_BACKEND_URL`/`_KEY` | (optional) ffmpeg backend for video/voice recognition |
+| `activate` | tick to register the webhook → bot goes live on Cloudflare (replaces the cPanel webhook) |
 
-### 3 — Deploy
-Push to `main`, or repo → **Actions → deploy → Run workflow** (`run_setup` ✓).
-The action will: run tests → create/inject the KV namespace → `wrangler secret
-put` → `wrangler deploy` → call `/setup` (webhook + commands) → verify
-`getWebhookInfo` → print the Worker URL in the summary.
+The action validates the fields, runs tests, provisions the KV namespace, uploads
+the secrets to the worker, deploys, and — only when `activate` is ticked —
+registers the webhook + verifies it. Values you type are **not** stored in the
+repo. To avoid retyping every run, save the same names as repository secrets and
+any field left blank falls back to that secret.
+
+- `activate = false` → Worker deployed + health-checked; webhook untouched.
+- `activate = true` → Worker deployed + `/setup` runs → webhook moved to Cloudflare (final cutover from cPanel).
 
 ### 4 — BotFather checklist (one-time, required)
 ```
