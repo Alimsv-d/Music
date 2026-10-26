@@ -123,3 +123,17 @@ Two distinct codebases exist and MUST NOT be force-merged:
   owner via settings after `/audiotest` A/B/C/D playback confirmation.
 - `src/lib/mp4check.js` is the structural validator used for forensics and for
   any future worker `/f/` output verification.
+
+## 2026-10-26 — Instagram worker root cause (Phase 4)
+- The `insta-worker` service is **healthy** (`/health` 200, KV bound, breaker
+  closed). Its single configured upstream `catplus.ir/api/insta` returns
+  `404 "Invalid URL or Private Post"` for EVERY public URL (verified directly,
+  not through Cloudflare) — so `E_PRIVATE_OR_NOT_FOUND` is an **upstream
+  provider outage**, not a Cloudflare-IP block and not a worker bug.
+- No amount of worker code fixes a dead upstream. The fix is a working resolver
+  provider (GraphQL/embed need an authenticated session — disallowed here) or a
+  maintained public resolver. Instagram's `/embed/captioned/` page is fully
+  JS-hydrated (no server-side media URLs), confirming a cookie-less public
+  scrape is not viable for reel media bytes. Owner must supply/replace
+  `UPSTREAM_URLS` with a live resolver; the worker already supports an ordered
+  fallback list via `UPSTREAM_URLS`.

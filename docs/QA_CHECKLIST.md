@@ -6,15 +6,19 @@ Status legend: ✅ verified with evidence · ⚠️ partial/blocked · ☐ not d
 - ✅ No media bytes written to disk on send paths (soundcloud fetchBuffer /
   fetchHlsBuffer / fetchTrackBuffer; instagram fetchBuffer; ffmpeg only via
   pipes). `node --check` + grep clean.
-- ✅ file_id cached only after `audio.duration` matches API ±3s (v5 cache).
-- ✅ m4a→document issue solved by uploading as `.mp3`/`audio/mpeg`.
-- ✅ HLS long tracks (>379s) stitched in memory, parallel ordered, ≤48MB.
+- ✅ **F1 root cause fixed**: send bytes were fragmented MP4 (34 moof/sidx). Now
+  `normalizeAudio` remuxes to a progressive MP4 in memory (mp4remux) or mp3
+  fallback; verified progressive + correct duration (333s) + ©nam/©ART tags.
+- ⚠️ file_id "verified by duration" claims were based on Telegram echoing the
+  input `duration` — NOT a real content check. Now gated on `mp4check` structure;
+  the echo-comparison is kept only as a cheap regression guard.
+- ⚠️ HLS long tracks (>379s) still stitched in memory; live ≥48MB send unverified.
 - ✅ Encrypted/undeliverable results filtered via isPlayable + check=1 mode.
-- ✅ mediaCache disk cache + pre-warming + MP3 transcode + RMS removed.
+- ✅ mediaCache disk cache + pre-warming + RMS removed.
 
 ## Groups
 - ✅ /start & /help answer in groups (were silent).
-- ✅ artist-only text ("مجید خراطها") → direct most-popular track + more button.
+- ✅ artist-only / ambiguous text in groups → result card (F6: no auto-direct).
 - ✅ stale negative-cache key invalidated (neg2:).
 - ✅ webhook allowed_updates includes edited_message + chosen_inline_result.
 - ⚠️ real Telegram delivery to Checker verified only via webhook-accepted

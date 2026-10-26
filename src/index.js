@@ -518,24 +518,10 @@ async function smartDetect(ctx, text) {
     const top = best.tr;
     const meta = cleanTrackMeta(top);
     const sid = sc.sidOf(top);
-    // artist-only or strong match -> send the file directly with a "more" button
-    if (best.score >= 0.75 && sc.isPlayable(top)) {
-      const q64 = Buffer.from(text).toString('base64url').slice(0, 48);
-      const mk = kb([[B('🔎 نتایج بیشتر', 'q:' + q64)]]);
-      try {
-        await downloadAndSend(ctx, top, ctx.lang, {
-          reply_markup: mk,
-          reply_to: ctx.message && ctx.message.message_id,
-        });
-      } catch (_) {
-        await ctx.reply(`🎵 <b>${esc(meta.artist)} — ${esc(meta.title)}</b>\n⏱ ${esc(top.duration || '')}`, {
-          parse_mode: 'HTML',
-          reply_markup: kb([[G(t(ctx.lang, 'dl'), 'dl:' + sid)]]),
-        });
-      }
-      store.incrStats('search');
-      return;
-    }
+    // Group unsolicited detections NEVER auto-send a file (F6): an artist-only
+    // or ambiguous message must show the result panel, not a download. Direct
+    // file send lives only in the explicit exact-match path. Here we always
+    // show a compact result card with a download button.
     await ctx.reply(`🎵 <b>${esc(meta.artist)} — ${esc(meta.title)}</b>\n⏱ ${esc(top.duration || '')}`, {
       parse_mode: 'HTML',
       reply_markup: kb([[G(t(ctx.lang, 'dl'), 'dl:' + sid)]]),

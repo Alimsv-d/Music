@@ -118,3 +118,21 @@ Track: live cPanel Node app (`~/music`, branch `cpanel-app`). GitHub `Alimsv-d/M
       verified: `via=stream+remux`, mp4check ok, progressive, correct tags.
       This is the actual F1 fix on the live path — needs owner /audiotest + a
       live sendAudio to confirm the Telegram player shows full seek bar.
+
+## 2026-10-26 — Phases 4–6 evidence pass
+- [x] Phase 4 (Instagram): root cause CONFIRMED with evidence. The worker
+      `/health` is 200 (KV bound, breaker closed). Its single upstream
+      `catplus.ir/api/insta` returns `404 "Invalid URL or Private Post"` for
+      every public URL — an upstream provider outage, NOT a Cloudflare-IP block
+      or worker bug. Embed/GraphQL need an authenticated session (disallowed).
+      Owner must replace `UPSTREAM_URLS` with a live resolver. Documented in
+      DECISIONS. No bot-side change can resolve a dead upstream.
+- [x] Phase 5 (recognition): signature vs WAV are equivalent (identical
+      results). Clean-sample corpus: 7/7 completed calls returned found:true.
+      See docs/RECOGNITION_REPORT.md. Voice/noise corpus pending owner data.
+- [x] Phase 6 (group decision): removed the stale "artist-only ≥0.75 → direct
+      send" in smartDetect. Unsolicited group detection now always shows a
+      compact result card (no auto file); direct file lives only in the
+      explicit exact-match path (score ≥0.92, margin ≥0.15, non-artist token).
+- [x] F2 corrected: duration-echo on sendAudio is not a content check; real
+      structural validation now via mp4check (documented in DECISIONS/QA).
