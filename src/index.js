@@ -15,6 +15,7 @@ const sc = require('./services/soundcloud');
 const sh = require('./services/shazam');
 const ig = require('./services/instagram');
 const { normalize, isSoundCloudUrl, similarity } = require('./services/query');
+const perf = require('./core/perf');
 const { downloadAndSend } = require('./bot/send');
 const { cleanTrackMeta } = require('./services/trackMeta');
 
@@ -177,6 +178,17 @@ bot.command('recognize', async (ctx) => {
   else await ctx.reply(t(ctx.lang, 'ask_voice'));
 });
 bot.command('help', async (ctx) => panel.show(ctx, 'help', {}, { push: false }));
+bot.command('perf', async (ctx) => {
+  if (!isOwner(ctx.from.id) || ctx.chat.type !== 'private') return;
+  const r = require('./core/perf').report();
+  const lines = ['⏱ <b>perf</b>'];
+  for (const [k, v] of Object.entries(r)) {
+    if (k === 'eventLoop') lines.push(`loop p50=${v.p50}ms p95=${v.p95}ms max=${v.max}ms`);
+    else if (k === 'rss') lines.push(`rss ${v}MB`);
+    else lines.push(`${k} n=${v.n} p50=${v.p50} p95=${v.p95} max=${v.max}`);
+  }
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+});
 bot.hears(/^(?:راهنما|help)$/i, async (ctx) => panel.show(ctx, 'help', {}, { push: false }));
 bot.command('admin', async (ctx) => {
   if (!isOwner(ctx.from.id) || ctx.chat.type !== 'private') return;
@@ -545,6 +557,20 @@ bot.on('callback_query', async (ctx) => {
       if (cur && cur.name === 'results' && cur.params.items) return panel.show(ctx, 'results', { ...cur.params, page }, { push: false });
       return;
     }
+    if (data.startsWith('fl:')) {
+      const st = panel.stateFor(ctx.chat.id, cq.message.message_id);
+      const cur = st && st.current;
+      const mode = data.slice(3);
+      await answer();
+      if (cur && cur.name === 'results' && cur.params.items) {
+        if (mode === 'artist') {
+          const artist = cleanTrackMeta(cur.params.items[0]).artist;
+          if (artist) return H.doSearch(ctx, artist);
+        }
+        return panel.show(ctx, 'results', { ...cur.params, filter: mode, page: 1 }, { push: false });
+      }
+      return;
+    }
     if (data.startsWith('pick:')) {
       const sid = data.slice(5);
       const st = panel.stateFor(ctx.chat.id, cq.message.message_id);
@@ -568,6 +594,11 @@ bot.on('callback_query', async (ctx) => {
       const q = Buffer.from(data.slice(2), 'base64url').toString();
       return q ? H.doSearch(ctx, q) : undefined;
     }
+    if (data.startsWith('qa:')) {
+      await answer(t(lang, 'searching'));
+      const q = Buffer.from(data.slice(3), 'base64url').toString();
+      return q ? H.doSearch(ctx, q) : undefined;
+    }
     if (data.startsWith('lyr:')) { await answer(); return panel.show(ctx, 'lyrics', { sid: data.slice(4) }); }
     if (data.startsWith('sim:')) {
       await answer(t(lang, 'searching'));
@@ -584,6 +615,11 @@ bot.on('callback_query', async (ctx) => {
       return;
     }
     if (data.startsWith('rdl:')) return H.recogDownload(ctx, data.slice(4));
+    if (data.startsWith('rsim:')) {
+      await answer(t(lang, 'searching'));
+      const q = Buffer.from(data.slice(5), 'base64url').toString();
+      return q ? H.doSearch(ctx, q) : undefined;
+    }
     if (data.startsWith('igm:')) return H.instaMusic(ctx, data.slice(4));
     if (data === 'igx') return H.instaRecognize(ctx);
     if (data.startsWith('igi:')) return inlineInstaMusic(ctx, data.slice(4));
@@ -912,6 +948,7 @@ function makeServer() {
     }
     if (req.method !== 'POST' || url !== config.webhookPath) return reply(404, { ok: false });
     if (req.headers['x-telegram-bot-api-secret-token'] !== config.webhookSecret) return reply(403, { ok: false });
+    const t0 = Date.now();
     let size = 0;
     const chunks = [];
     req.on('data', (c) => {
@@ -925,6 +962,7 @@ function makeServer() {
       try { update = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
       catch (_) { return reply(400, { ok: false }); }
       reply(200, { ok: true });
+      perf.record('ack', Date.now() - t0);
       setImmediate(() => enqueue(update));
     });
     req.on('error', () => { if (!res.headersSent) reply(400, { ok: false }); });
@@ -948,6 +986,8 @@ async function main() {
     // cannot be installed (also invoked externally via /cron/<secret>).
     const tick = () => channel.cronTick(bot.api).catch((e) => log.error('cron tick', e.message));
     config._cronTimer = setInterval(tick, 5 * 60 * 1000);
+    config._eldTimer = setInterval(() => perf.checkLoop(log), 30000);
+    config._eldTimer.unref && config._eldTimer.unref();
     config._cronTimer.unref && config._cronTimer.unref();
     setTimeout(tick, 30000).unref && setTimeout(tick, 30000).unref();
   }
@@ -956,6 +996,7 @@ async function main() {
     log.info('shutdown ' + sig);
     try { await bot.stop(); } catch (_) {}
     try { config._cronTimer && clearInterval(config._cronTimer); } catch (_) {}
+    try { config._eldTimer && clearInterval(config._eldTimer); } catch (_) {}
     try { config._server && config._server.close(); } catch (_) {}
     try { store.close(); } catch (_) {}
     process.exit(0);

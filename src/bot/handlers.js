@@ -64,33 +64,46 @@ panel.register('lang', async (ctx, p, lang) => {
 });
 
 panel.register('results', async (ctx, params, lang) => {
-  const { q, page = 1, items } = params;
-  const start = (page - 1) * SEARCH_PAGE;
-  const visible = items.slice(start, page * SEARCH_PAGE);
-  const titles = new Map();
-  const lines = visible.map((tr, i) => {
-    const meta = cleanTrackMeta(tr);
-    const base = meta.title || tr.title || '؟';
-    const count = (titles.get(base) || 0) + 1; titles.set(base, count);
-    const title = count > 1 ? `${base} · نسخه‌ی ${persianDigits(count)}` : base;
-    const artist = meta.artist && visible.some((x) => cleanTrackMeta(x).artist !== meta.artist) ? ` — ${meta.artist}` : '';
-    return `${persianDigits(start + i + 1)}. ${esc(title)}${artist ? ` — ${esc(artist)}` : ''}${tr.duration || fmtDur(tr.duration_ms) ? ` — ${persianDigits(tr.duration || fmtDur(tr.duration_ms))}` : ''}`;
+  const { q, page = 1, items, filter = 'pop' } = params;
+  // sort by filter: pop = plays desc, new = created_at desc
+  const sorted = [...items].sort((a, b) => filter === 'new'
+    ? new Date(b.created_at || 0) - new Date(a.created_at || 0)
+    : (b.plays || 0) - (a.plays || 0));
+  const totalPages = Math.max(1, Math.ceil(sorted.length / SEARCH_PAGE));
+  const pg = Math.min(Math.max(1, page), totalPages);
+  const visible = sorted.slice((pg - 1) * SEARCH_PAGE, pg * SEARCH_PAGE);
+
+  // buttons: title-only, full width; on duplicate titles within the page append
+  // " · artist" to just the colliding ones.
+  const metas = visible.map((tr) => cleanTrackMeta(tr));
+  const dup = new Map();
+  for (const m of metas) { const k = m.title || '?'; dup.set(k, (dup.get(k) || 0) + 1); }
+  const rows = visible.map((tr, i) => {
+    const m = metas[i];
+    let label = m.title || tr.title || '؟';
+    if ((dup.get(label) || 0) > 1 && m.artist) label += ` · ${m.artist}`;
+    return [B(truncateVisual(label, 34), 'pick:' + sidOf(tr))];
   });
-  const rows = visible.map((tr) => {
-    const m = cleanTrackMeta(tr);
-    const label = truncateVisual(m.title || tr.title || '؟', 34);
-    return [B(label, 'pick:' + sidOf(tr))];
-  });
-  const totalPages = Math.max(1, Math.ceil(items.length / SEARCH_PAGE));
+
+  // pagination row
   const nav = [];
-  if (page > 1) nav.push(B('⬅️', `pg:${page - 1}`));
-  nav.push(B(`${num(lang, page)}/${num(lang, totalPages)}`, 'noop'));
-  if (page < totalPages) nav.push(B('➡️', `pg:${page + 1}`));
+  if (pg > 1) nav.push(B('◀️ قبلی', `pg:${pg - 1}`));
+  nav.push(B(`${num(lang, pg)}/${num(lang, totalPages)}`, 'noop'));
+  if (pg < totalPages) nav.push(B('بعدی ▶️', `pg:${pg + 1}`));
   if (totalPages > 1) rows.push(nav);
-  rows.push([R(t(lang, 'back'), 'nav:menu')]);
-  const artists = [...new Set(visible.map((tr) => cleanTrackMeta(tr).artist).filter(Boolean))];
-  const heading = `🎤 ${artists.length === 1 ? esc(artists[0]) + ' · ' : ''}${num(lang, items.length)} آهنگ`;
-  return { text: `${heading}\n${lines.join('\n')}`, keyboard: kb(rows) };
+
+  // filter row
+  const filtRow = [];
+  const popBtn = filter === 'pop' ? G('🔥 محبوب', 'fl:pop') : B('🔥 محبوب', 'fl:pop');
+  const newBtn = filter === 'new' ? G('🆕 جدید', 'fl:new') : B('🆕 جدید', 'fl:new');
+  filtRow.push(popBtn, newBtn);
+  const artists = [...new Set(metas.map((m) => m.artist).filter(Boolean))];
+  if (artists.length === 1 && artists[0] && similarity(q, artists[0]) < 0.9) filtRow.push(B('🎤 همین خواننده', 'fl:artist'));
+  rows.push(filtRow);
+  rows.push([R('✖️ بستن', 'nav:close')]);
+
+  const text = `🔎 <b>نتایج «${esc(q)}»</b>\n${num(lang, sorted.length)} آهنگ · صفحه ${num(lang, pg)} از ${num(lang, totalPages)}\n\n<blockquote>برای دریافت فایل، روی نام آهنگ بزن 👇</blockquote>`;
+  return { text, keyboard: kb(rows) };
 });
 
 function truncateVisual(value, max) {
@@ -147,19 +160,21 @@ panel.register('history', async (ctx, p, lang) => {
 
 panel.register('recog', async (ctx, params, lang) => {
   const d = params.data;
+  const meta = [];
+  if (d.album) meta.push(`💿 ${esc(d.album)}`);
+  if (d.year) meta.push(`${esc(String(d.year))}`);
   const lines = [
-    `🎤 <b>${esc(d.title || '?')}</b>`,
-    `👤 ${esc(d.artist || '?')}`,
-    d.album ? `💿 ${esc(d.album)}` : null,
-    d.year ? `📅 ${iso(esc(String(d.year)))}` : null,
-    d.confidence != null ? `🎯 اطمینان: ${num(lang, Math.round(d.confidence))}%` : null,
+    `🎧 <b>${esc(d.title || '?')}</b>`,
+    `👤 ${esc(d.artist || '?')}${d.confidence != null ? ` · 🎯 اطمینان ${num(lang, Math.round(d.confidence))}٪` : ''}`,
+    meta.length ? meta.join(' · ') : null,
   ].filter(Boolean);
   const q = `${d.artist || ''} ${d.title || ''}`.trim();
+  const q64 = Buffer.from(q).toString('base64url').slice(0, 44);
   const rows = [
-    [G(t(lang, 'dl'), 'rdl:' + Buffer.from(q).toString('base64url').slice(0, 44))],
-    d.lyrics && d.lyrics.available ? [B(t(lang, 'lyrics'), 'rlyr')] : null,
-    [R(t(lang, 'back'), 'nav:menu')],
-  ].filter(Boolean);
+    [G('⬇️ دریافت فایل کامل', 'rdl:' + q64)],
+    [B('🔎 مشابه', 'rsim:' + q64)],
+    [R('✖️ بستن', 'nav:close')],
+  ];
   setPanel(ctx.chat.id, ctx.from.id, { recog: d, recogQuery: q });
   return { text: lines.join('\n'), keyboard: kb(rows), media: d.artwork };
 });
@@ -223,6 +238,11 @@ function featureOn(name) {
 
 // ============ FLOWS ============
 async function doSearch(ctx, q) {
+  const t0 = Date.now();
+  try { return await _doSearch(ctx, q); }
+  finally { require('../core/perf').record('search', Date.now() - t0); }
+}
+async function _doSearch(ctx, q) {
   const lang = ctx.lang;
   if (!featureOn('search')) return editOrReply(ctx, t(lang, 'error_service'));
   const w = rl.check(ctx.from.id, 'search');
