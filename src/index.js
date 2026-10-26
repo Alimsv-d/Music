@@ -216,6 +216,97 @@ bot.command('gatetest', async (ctx) => {
   store.set('settings', 'gatetest:' + String(ctx.from.id), Date.now() + 300000);
   await ctx.reply('آزمایش gate برای ۵ دقیقه فعال شد؛ اجرای درخواست شما به‌صورت غیرعضو بررسی می‌شود.');
 });
+// /audiotest <query|sid> — forensic A/B/C/D comparison for the "12-second" bug.
+// Owner-only. Sends up to 4 renditions of ONE track with mp4check results so the
+// owner can confirm which container plays fully with a working seek bar.
+//   A = current pipeline output (in-memory bytes -> upload)
+//   B = progressive M4A remuxed in-memory via ffmpeg -c copy (moov faststart)
+//   C = MP3 (libmp3lame) in-memory
+//   D = sendAudio by worker URL (verifies whether URL-send lands as `audio`)
+// Media is handled entirely in memory; nothing is written to disk.
+bot.command('audiotest', async (ctx) => {
+  if (!isOwner(ctx.from.id) || ctx.chat.type !== 'private') return;
+  const q = (ctx.match || '').trim();
+  if (!q) { await ctx.reply('فرمت: /audiotest <نام آهنگ یا sid>'); return; }
+  const mp4check = require('./lib/mp4check');
+  const { cleanTrackMeta } = require('./services/trackMeta');
+  const { InputFile } = require('grammy');
+  await ctx.reply('⏳ در حال آماده‌سازی نسخه‌های A/B/C/D…').catch(() => {});
+  let tr;
+  try {
+    if (/^\d+$/.test(q)) tr = await sc.track(q);
+    else { const d = await sc.search(q, 1, ctx.lang); tr = (d.results || [])[0]; }
+  } catch (_) {}
+  if (!tr) { await ctx.reply('آهنگ پیدا نشد.'); return; }
+  const sid = sc.sidOf(tr);
+  const meta = cleanTrackMeta(tr);
+  const title = meta.title || 'track', performer = meta.artist || '';
+  const expected = Math.round((tr.duration_ms || 0) / 1000);
+  let audio;
+  try { audio = await require('./bot/send').buildAudioBuffer(tr, sid); }
+  catch (e) { await ctx.reply('دانلود منبع ناموفق: ' + (e.code || e.message)); return; }
+  const report = (name, bufOrNull, extra) => {
+    if (!bufOrNull) return `• ${name}: ساخته نشد`;
+    const c = mp4check.check(bufOrNull, { expectedSeconds: expected });
+    const flags = [c.fragmented ? 'fMP4' : 'progressive', `moovBeforeMdat=${c.moovBeforeMdat}`, `dur=${c.sttsDurS != null ? c.sttsDurS.toFixed(1) : '?'}s`, c.ok ? '✅' : '❌ ' + c.reasons.join(',')].join(' ');
+    return `• ${name}: ${flags}${extra ? ' ' + extra : ''}`;
+  };
+  const lines = [`🧪 audiotest: ${performer} — ${title} (${expected}s)`];
+  // A — current bytes as fetched (uploaded)
+  lines.push(report('A:current-upload', audio.buf, `via=${audio.via}`));
+  // B — progressive m4a remux (ffmpeg -c copy, in-memory via pipe)
+  let bBuf = null;
+  try { bBuf = await remuxInMemory(audio.buf, ['-c', 'copy', '-movflags', '+faststart', '-f', 'mp4']); } catch (_) {}
+  lines.push(report('B:m4a-remux', bBuf));
+  // C — mp3 (libmp3lame) in-memory
+  let cBuf = null;
+  try { cBuf = await remuxInMemory(audio.buf, ['-c:a', 'libmp3lame', '-q:a', '5', '-f', 'mp3']); } catch (_) {}
+  lines.push(report('C:mp3', cBuf, '(mp3 has no moov; flagged separately)'));
+  await ctx.reply(lines.join('\n'));
+  const base = { title, performer, duration: expected || undefined };
+  const safe = (s) => s.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
+  // A
+  try { await ctx.api.sendAudio(ctx.chat.id, new InputFile(audio.buf, safe(performer + ' - ' + title) + '.mp3'), { ...base, caption: '🅰️ current upload (mp3-name)' }); } catch (e) { await ctx.reply('A send failed: ' + (e.description || e.message)); }
+  // B
+  if (bBuf) { try { await ctx.api.sendAudio(ctx.chat.id, new InputFile(bBuf, safe(performer + ' - ' + title) + '.m4a'), { ...base, caption: '🅱️ m4a remux faststart' }); } catch (e) { await ctx.reply('B send failed: ' + (e.description || e.message)); } }
+  // C
+  if (cBuf) { try { await ctx.api.sendAudio(ctx.chat.id, new InputFile(cBuf, safe(performer + ' - ' + title) + '.mp3'), { ...base, caption: '🅲 mp3 libmp3lame' }); } catch (e) { await ctx.reply('C send failed: ' + (e.description || e.message)); } }
+  // D — URL send
+  try {
+    const sent = await ctx.api.sendAudio(ctx.chat.id, sc.streamUrl(sid), { ...base, caption: '🅳 URL send (worker /stream)' });
+    const kind = sent.audio ? 'audio' : (sent.document ? 'document' : 'other');
+    await ctx.reply('D نتیجه: ' + kind + (sent.document ? ` (mime=${sent.document.mime_type})` : ''));
+  } catch (e) { await ctx.reply('D send failed: ' + (e.description || e.message)); }
+});
+// in-memory ffmpeg remux via pipes; never touches disk. Only for owner forensics.
+function remuxInMemory(buf, args, timeout = 60000) {
+  const { spawn } = require('node:child_process');
+  return new Promise((resolve, reject) => {
+    const p = spawn('nice', ['-n', '10', 'ffmpeg', '-v', 'error', '-i', 'pipe:0', ...args, 'pipe:1'], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const chunks = [];
+    const to = setTimeout(() => { try { p.kill('SIGKILL'); } catch (_) {} ; reject(new Error('timeout')); }, timeout);
+    p.stdout.on('data', (c) => chunks.push(c));
+    p.on('error', (e) => { clearTimeout(to); reject(e); });
+    p.on('close', (code) => { clearTimeout(to); if (code !== 0) return reject(new Error('ffmpeg ' + code)); resolve(Buffer.concat(chunks)); });
+    p.stdin.on('error', () => {});
+    p.stdin.write(buf); p.stdin.end();
+  });
+}
+
+bot.command('debug_reset', async (ctx) => {
+  if (process.env.E2E_MODE !== '1') return;
+  if (!isOwner(ctx.from.id) || ctx.chat.type !== 'private') return;
+  const uid = String(ctx.match || '').trim();
+  if (!/^\d+$/.test(uid)) return ctx.reply('usage: /debug_reset <user_id>');
+  for (const ns of ['favorites', 'history', 'negcache', 'panel', 'users', 'referral']) {
+    try { store.del(ns, uid); } catch (_) {}
+  }
+  for (const [k, e] of store.all('referral')) {
+    if (e.invitee === uid || e.inviter === uid) store.del('referral', k);
+  }
+  try { memberCache.clear(); } catch (_) {}
+  await ctx.reply('test record cleared for ' + uid);
+});
 bot.command('diag', async (ctx) => {
   if (ctx.chat.type === 'private') return;
   if (!(await isGroupAdmin(ctx))) return;
@@ -313,7 +404,7 @@ bot.on('message', async (ctx) => {
   }
 
   const text = (msg.text || msg.caption || '').trim();
-  if (ctx.chat.type !== 'private' && text && !/^\/(?:start|help|music|search|song|recognize|diag|settings)(?:@\w+)?(?:\s|$)/i.test(text) && !text.toLowerCase().includes('@' + config.botUsername.toLowerCase()) && !(msg.reply_to_message && (await isReplyToBot(ctx, msg))) && !/^(?:راهنما|help)$/i.test(text) && !ig.isInstaUrl(text)) {
+  if (ctx.chat.type !== 'private' && text && !/^\/(?:start|help|music|search|song|recognize|diag|settings)(?:@\w+)?(?:\s|$)/i.test(text) && !text.toLowerCase().includes('@' + config.botUsername.toLowerCase()) && !(msg.reply_to_message && (await isReplyToBot(ctx, msg))) && !/^(?:راهنما|help)$/i.test(text) && !ig.isInstaUrl(text) && !isSoundCloudUrl(text)) {
     const gs = chatSettings(ctx.chat.id);
     if (gs.smart === false || text.length >= 80 || /[@#]/.test(text) || containsLink(msg) || text.split(/\s+/).length > 6) return;
   }
@@ -330,13 +421,17 @@ bot.on('message', async (ctx) => {
   // INSTAGRAM link — auto resolve + download media + music button
   if (ig.isInstaUrl(text)) {
     const addressed = ctx.chat.type === 'private' || (await isReplyToBot(ctx, msg));
-    if (addressed) return H.doInsta(ctx, ig.cleanUrl(text));
+    if (addressed) {
+      if (ctx.chat.type !== 'private' && (!allowedLinkRequest(ctx) || rl.groupLimit(ctx.chat.id))) return;
+      return H.doInsta(ctx, ig.cleanUrl(text));
+    }
     return;
   }
   // SOUNDCLOUD link -> direct download of the resolved track
   if (isSoundCloudUrl(text)) {
     const addressed = ctx.chat.type === 'private' || (await isReplyToBot(ctx, msg));
     if (addressed) {
+      if (ctx.chat.type !== 'private' && (!allowedLinkRequest(ctx) || rl.groupLimit(ctx.chat.id))) return;
       try {
         const tr = await sc.resolveUrl(text);
         return H.runDownload(ctx, sc.sidOf(tr));
@@ -388,6 +483,20 @@ function containsLink(msg) {
   if (msg.entities && msg.entities.some((e) => e.type === 'url' || e.type === 'text_link')) return true;
   if (msg.caption_entities && msg.caption_entities.some((e) => e.type === 'url' || e.type === 'text_link')) return true;
   return false;
+}
+
+// Supported links in groups are allowed without a reply/mention, but still
+// bounded per user and per group to prevent link spam.
+const groupLinkSeen = new Map();
+function allowedLinkRequest(ctx) {
+  const now = Date.now();
+  const userKey = `${ctx.from && ctx.from.id}:links`, chatKey = `${ctx.chat && ctx.chat.id}:links`;
+  const takeLimit = (key, max) => {
+    const arr = (groupLinkSeen.get(key) || []).filter((x) => now - x < 60000);
+    if (arr.length >= max) { groupLinkSeen.set(key, arr); return false; }
+    arr.push(now); groupLinkSeen.set(key, arr); return true;
+  };
+  return takeLimit(userKey, 5) && takeLimit(chatKey, 10);
 }
 
 const smartCd = new Map();
@@ -571,8 +680,11 @@ bot.on('callback_query', async (ctx) => {
     if (data.startsWith('pg:')) {
       const st = panel.stateFor(ctx.chat.id, cq.message.message_id);
       const page = Number(data.slice(3));
-      await answer();
       const cur = st && st.current;
+      if (ctx.chat.type !== 'private' && cur && cur.params && cur.params.owner && cur.params.owner !== uid) {
+        return answer('این پنل برای کاربر دیگری است', true);
+      }
+      await answer();
       if (cur && cur.name === 'results' && cur.params.items) return panel.show(ctx, 'results', { ...cur.params, page }, { push: false });
       return;
     }
@@ -580,6 +692,9 @@ bot.on('callback_query', async (ctx) => {
       const st = panel.stateFor(ctx.chat.id, cq.message.message_id);
       const cur = st && st.current;
       const mode = data.slice(3);
+      if (ctx.chat.type !== 'private' && cur && cur.params && cur.params.owner && cur.params.owner !== uid) {
+        return answer('این پنل برای کاربر دیگری است', true);
+      }
       await answer();
       if (cur && cur.name === 'results' && cur.params.items) {
         if (mode === 'artist') {
@@ -593,7 +708,16 @@ bot.on('callback_query', async (ctx) => {
     if (data.startsWith('pick:')) {
       const sid = data.slice(5);
       const st = panel.stateFor(ctx.chat.id, cq.message.message_id);
-      const q = st && st.current && st.current.params && st.current.params.q;
+      const cur = st && st.current;
+      if (ctx.chat.type !== 'private' && cur && cur.params && cur.params.owner && cur.params.owner !== uid) {
+        return answer('این پنل برای کاربر دیگری است', true);
+      }
+      if (ctx.chat.type !== 'private' && cur && cur.params && cur.params.at && Date.now() - cur.params.at > 600000) {
+        await answer('این پنل منقضی شده است', true);
+        try { await ctx.deleteMessage(); } catch (_) {}
+        return;
+      }
+      const q = cur && cur.params && cur.params.q;
       if (q) {
         const learned = store.get('settings', 'search_learning') || {};
         const tr = await sc.track(sid).catch(() => null);
@@ -693,6 +817,23 @@ bot.on('callback_query', async (ctx) => {
     if (data === 'a:bc') { await answer(); H.setAwait(uid, { type: 'broadcast' }); return editPanel(ctx, t(lang, 'broadcast_ask'), [[R(t(lang, 'cancel'), 'a:panel')]]); }
     if (data === 'a:banask') { await answer(); H.setAwait(uid, { type: 'ban' }); return editPanel(ctx, t(lang, 'ban_ask'), [[R(t(lang, 'cancel'), 'a:bans')]]); }
     if (data === 'ach:add') { await answer(); H.setAwait(uid, { type: 'addchannel' }); return editPanel(ctx, t(lang, 'channel_add_ask'), [[R(t(lang, 'cancel'), 'a:chans')]]); }
+    if (data.startsWith('ach:')) {
+      await answer();
+      return panel.show(ctx, 'admin_channel_status', { id: data.slice(4) }, { push: false });
+    }
+    if (data === 'achp:toggle') {
+      const cfg = channel.postPolicy(); cfg.enabled = !cfg.enabled; channel.savePostPolicy(cfg);
+      await answer(cfg.enabled ? '🟢' : '🔴'); return panel.show(ctx, 'admin_channel_status', {}, { push: false });
+    }
+    if (data === 'achp:preview') {
+      const cfg = channel.postPolicy(); cfg.preview = !cfg.preview; channel.savePostPolicy(cfg);
+      await answer(cfg.preview ? '👁' : '🚀'); return panel.show(ctx, 'admin_channel_status', {}, { push: false });
+    }
+    if (data === 'achp:now') {
+      await answer('📣');
+      await channel.drainQueue(ctx.api);
+      return panel.show(ctx, 'admin_channel_status', {}, { push: false });
+    }
     if (data.startsWith('achd:')) {
       const id = data.slice(5);
       channel.saveChannels(channel.channels().filter((c) => String(c.id) !== id));
@@ -716,6 +857,7 @@ bot.on('callback_query', async (ctx) => {
       const s = store.get('settings', 'global') || {};
       if (key === 'antispam') s.antispam = !(s.antispam !== false);
       if (key === 'maintenance') s.maintenance = !s.maintenance;
+      if (key === 'audio_format') s.audio_format = s.audio_format === 'm4a' ? 'mp3' : 'm4a';
       store.set('settings', 'global', s);
       await answer('✓'); return panel.show(ctx, 'admin_settings', {}, { push: false });
     }

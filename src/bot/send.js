@@ -12,6 +12,16 @@ const MAX_BYTES = 48 * 1024 * 1024;
 const CACHE_VERSION = 'v5';
 const META_VERSION = 'cleanTrackMeta-v2';
 
+// Output container preference for the audio send path. 'mp3' (default) uploads
+// the assembled bytes with an .mp3 filename/mime so Telegram returns a seekable
+// `audio` object; 'm4a' is kept for the forensic /audiotest A/B comparison and
+// is NOT used on the user-facing path because URL-sends of m4a land as
+// `document`. Changeable from the owner settings panel.
+function audioFormat() {
+  const s = getStore().get('settings', 'global') || {};
+  return s.audio_format === 'm4a' ? 'm4a' : 'mp3';
+}
+
 function audioCaption(tr, lang) {
   const { i18n } = require('../core/context'); const { cleanTrackMeta } = require('../services/trackMeta'); const { esc } = i18n;
   const m = cleanTrackMeta(tr);
@@ -57,8 +67,12 @@ async function _downloadAndSend(ctx, tr, lang, opts = {}) {
   // 1) verified file_id -> instant send
   if (key && key.file_id && key.v === CACHE_VERSION) {
     try {
-      await ctx.api.sendAudio(chatId, key.file_id, { title, performer, duration: key.duration, ...share });
-      return;
+      const sent = await ctx.api.sendAudio(chatId, key.file_id, { title, performer, duration: key.duration, ...share });
+      const sentDuration = sent && sent.audio && sent.audio.duration;
+      if (expected && sentDuration && Math.abs(sentDuration - expected) > 3) {
+        try { await ctx.api.deleteMessage(chatId, sent.message_id); } catch (_) {}
+        store.del('file_id_cache', cacheKey);
+      } else return;
     } catch (_) { store.del('file_id_cache', cacheKey); }
   } else if (key) store.del('file_id_cache', cacheKey);
 
@@ -86,4 +100,4 @@ async function _downloadAndSend(ctx, tr, lang, opts = {}) {
   });
 }
 
-module.exports = { downloadAndSend, buildAudioBuffer, audioCaption, audioButtons, CACHE_VERSION };
+module.exports = { downloadAndSend, buildAudioBuffer, audioCaption, audioButtons, audioFormat, CACHE_VERSION };

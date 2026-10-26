@@ -43,8 +43,20 @@ Status legend: ✅ verified with evidence · ⚠️ partial/blocked · ☐ not d
 - ✅ codes/links, evaluate (self/dup/not-new/rate-cap→held), maybeVerify on
   first use, points/tiers, /invite /top, menu button. 5/5 unit tests.
 
-## Quality gates
-- ✅ `npm test` 32/32 · `node --check` all files · `npm audit` 0 vulns.
-- ☐ bidi-js snapshot test (devDependency not yet added).
-- ☐ owner manual steps: BotFather /setinlinefeedback on, /setinlinegeo off,
-      /setprivacy off or keep bot admin; inline test in a second chat.
+## Quality gates — 2026-10-26 update
+- ✅ `npm test` 38/38 · `node --check` changed files · `npm audit --omit=dev`
+  reports 0 vulnerabilities.
+- ✅ E2E helpers: gitignored `tools/e2e`, hidden credentials, restricted
+  destinations, no session/token output, `logout.js` removes local test
+  credentials after calling Telegram logout when a session exists.
+- ✅ Group links: supported Instagram/SoundCloud links are processed without
+  reply/mention and bounded per user/chat; ordinary chatter remains filtered.
+- ✅ Direct-vs-list: exact artist/title intent only (score >=0.92, >=0.15 gap,
+  non-artist token); ambiguous or artist-only queries return a results panel.
+- ✅ Group result panels are requester-owned and expire after 10 minutes.
+- ✅ `file_id` reuse verifies Telegram-returned duration against API duration
+  before trusting the cache.
+- ✅ Channel policy defaults: 3 posts/day, 3-hour gap, Tehran 01:00-08:00 quiet
+  hours, preview mode, queue and publish-now admin controls.
+- ⚠️ Live Telegram E2E/channel verification is still blocked until the owner
+  completes `node tools/e2e/login.js` and `data/e2e.session` exists.

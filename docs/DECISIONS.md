@@ -74,3 +74,52 @@ Two distinct codebases exist and MUST NOT be force-merged:
   user's ref_status, so points tally from events alone.
 - npm test is serialized (--test-concurrency=1): the singleton sqlite store is
   per-process and parallel test files could contend on the same data dir.
+
+## 2026-10-26 — live verification pass
+
+- E2E credential handling is scoped to `tools/e2e` and `.env.e2e`; Telegram API
+  IDs remain API hash/session only in ignored local files. The test helper
+  refuses destinations outside the approved bot, Checker group, Saved Messages,
+  and read-only main channel allowlist.
+- Group supported-link handling now permits Instagram/SoundCloud messages
+  without reply or mention while preserving bounded per-user and per-chat link
+  limits. Ordinary group chatter remains filtered by smart detection.
+- Direct-file search is restricted to exact artist/title intent: top score
+  >=0.92, at least a 0.15 score margin over the next result, and at least one
+  query token outside the artist alias. Artist-only or ambiguous queries show
+  the paginated results panel.
+- Group result panels are requester-scoped and expire after 10 minutes; other
+  group members receive a toast instead of controlling someone else's panel.
+- Telegram `file_id` sends now validate returned duration before reusing the
+  cached file_id; mismatches invalidate the cache and continue through the
+  in-memory SoundCloud fetch/upload path.
+- 2026-10-26: Channel publishing policy is stored in settings: max 3 posts/day, minimum
+  3-hour spacing, Tehran 01:00-08:00 quiet hours, owner preview mode, queue
+  status, and an admin "publish now" action. Scheduled queue entries publish
+  only after their timestamp.
+
+## 2026-10-26 — root-cause corrections (supersedes prior claims)
+
+- **F1 (12-second playback):** CONFIRMED the send bytes are a *fragmented MP4*
+  (`moof/mdat/sidx` per ~10s segment, `mvex` present). Bytes are complete
+  (ffprobe reads full duration); Telegram's player only honours the first
+  fragment timeline. The fix is a *progressive* container, not more bytes.
+- **F2:** Telegram echoes the `duration` you pass to sendAudio — comparing it to
+  the API duration is NOT a content check. The `file_id` "verified" claim based
+  on duration-echo is withdrawn; real validation now comes from `mp4check` on
+  the byte structure. (send.js still uses it only as a cheap regression guard,
+  not as proof of integrity.)
+- **F3:** `performer` was set on sendAudio; the empty player header traces to
+  the fragmented container + missing metadata tags, addressed by producing a
+  progressive file with `©nam/©ART` tags.
+- **F6:** "artist-only ≥0.75 → direct send" is REJECTED. Rule (private & group):
+  direct file ONLY when the query is an exact title (or artist+title): top
+  similarity ≥0.92, margin over #2 ≥0.15, and ≥1 query token beyond the artist
+  name. Artist-only, ambiguous or same-title queries → results panel.
+- **F7:** SoundCloud `transcodings` truly lack `protocol:"progressive"` — only
+  `hls` and `cbc/ctr-encrypted-hls`. `hasProgressive/hasMp3=false` are correct.
+- **AUDIO_FORMAT:** default `mp3` (in-memory). `m4a` requires an in-memory
+  `-c copy -movflags +faststart` remux to become progressive; selectable by the
+  owner via settings after `/audiotest` A/B/C/D playback confirmation.
+- `src/lib/mp4check.js` is the structural validator used for forensics and for
+  any future worker `/f/` output verification.

@@ -77,14 +77,36 @@ panel.register('admin_health', async (ctx, p, lang) => {
 
 panel.register('admin_channels', async (ctx, p, lang) => {
   const chans = channel.channels();
+  const cfg = channel.postPolicy();
   const rows = [];
   for (const ch of chans) {
     const st = await channel.channelStatus(ctx.api, ch);
     rows.push([B(`${st.ok ? '✅' : '❌'} ${ch.title || ch.id}`, 'ach:' + ch.id), R('🗑', 'achd:' + ch.id)]);
   }
+  rows.push([B(cfg.enabled ? '🟢 انتشار خودکار: روشن' : '🔴 انتشار خودکار: خاموش', 'achp:toggle'), B(cfg.preview ? '👁 حالت پیش‌نمایش: روشن' : '🚀 حالت انتشار: خودکار', 'achp:preview')]);
+  rows.push([G('📣 انتشار الان', 'achp:now')]);
   rows.push([G('➕ ' + t(lang, 'channel_add_ask').split(' ')[0], 'ach:add')]);
   rows.push([R(t(lang, 'back'), 'a:panel')]);
   return { text: t(lang, 'channels_title') + ` (${chans.length})`, keyboard: kb(rows) };
+});
+
+panel.register('admin_channel_status', async (ctx, p, lang) => {
+  const summary = await channel.channelSummary(ctx.api);
+  const lines = summary.channels.map((c) => `${c.status ? '✅' : '❌'} ${esc(c.title || c.id)}${c.reason ? ' — ' + esc(c.reason) : ''}`);
+  const cfg = summary.cfg;
+  const text = [
+    '📢 <b>وضعیت کانال</b>',
+    `حالت: ${cfg.preview ? 'پیش‌نمایش مالک' : 'انتشار خودکار'} · انتشار روزانه: ${cfg.enabled ? 'فعال' : 'غیرفعال'}`,
+    `سقف روزانه: ${num(lang, cfg.maxPerDay)} · فاصله حداقلی: ${num(lang, Math.round(cfg.minGapMs / 60000))} دقیقه`,
+    `صف انتشار: ${num(lang, summary.queued)}`,
+    lines.length ? lines.join('\n') : 'کانالی ثبت نشده است.',
+  ].join('\n');
+  const rows = [
+    [B(cfg.enabled ? '🔴 خاموش‌کردن انتشار' : '🟢 روشن‌کردن انتشار', 'achp:toggle')],
+    [B(cfg.preview ? '🚀 انتشار مستقیم' : '👁 بازگشت به پیش‌نمایش', 'achp:preview'), G('📣 انتشار الان', 'achp:now')],
+    [R(t(lang, 'back'), 'a:chans')],
+  ];
+  return { text, keyboard: kb(rows) };
 });
 
 panel.register('admin_bans', async (ctx, p, lang) => {
@@ -103,6 +125,7 @@ panel.register('admin_settings', async (ctx, p, lang) => {
     [B(`🛡 ${t(lang, 'set_antispam', { v: onoff(s.antispam !== false) })}`, 'aset:antispam')],
     [B(`🛠 ${t(lang, 'set_maintenance', { v: onoff(!!s.maintenance) })}`, 'aset:maintenance')],
     [B(`🔒 عضویت اجباری (${fj.length})`, 'a:fjlist')],
+    [B(`🎚 فرمت صدا: ${(s.audio_format === 'm4a' ? 'm4a' : 'mp3')}`, 'aset:audio_format')],
     [R(t(lang, 'back'), 'a:panel')],
   ];
   return { text: t(lang, 'settings_title'), keyboard: kb(rows) };

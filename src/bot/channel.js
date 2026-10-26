@@ -14,6 +14,25 @@ function follows() { return store.get('settings', 'follows') || []; }
 function saveFollows(l) { store.set('settings', 'follows', l); }
 function queueList() { return store.get('settings', 'post_queue') || []; }
 function saveQueue(l) { store.set('settings', 'post_queue', l); }
+function postPolicy() {
+  const cfg = store.get('settings', 'channel_policy') || {};
+  return {
+    enabled: cfg.enabled !== false,
+    maxPerDay: Number(cfg.maxPerDay || 3),
+    minGapMs: Number(cfg.minGapMs || 3 * 60 * 60 * 1000),
+    quietStart: Number(cfg.quietStart ?? 1),
+    quietEnd: Number(cfg.quietEnd ?? 8),
+    preview: !!cfg.preview,
+  };
+}
+function savePostPolicy(cfg) { store.set('settings', 'channel_policy', cfg); }
+function todayTehran() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+function inQuietHours(cfg, now) {
+  const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Tehran', hour: '2-digit', hour12: false }).format(new Date(now)));
+  return cfg.quietStart <= cfg.quietEnd ? (hour >= cfg.quietStart && hour < cfg.quietEnd) : (hour >= cfg.quietStart || hour < cfg.quietEnd);
+}
 
 async function channelStatus(api, ch) {
   try {
@@ -156,26 +175,36 @@ async function scanFollows(api) {
         const created = tr.created_at ? new Date(tr.created_at).getTime() : 0;
         if (now - created > 7 * 86400000) continue;
         if (alreadyPosted(tr)) continue;
-        await sendPreview(api, tr, 'fa');
+        if (postPolicy().preview) await sendPreview(api, tr, 'fa');
+        else { const q = queueList(); q.push({ tr, at: now }); saveQueue(q); }
       }
     } catch (e) { log.warn('follow scan', e.message); }
   }
 }
 
-// publish queue with safe spacing
+// publish queue with safe spacing and policy limits
 async function drainQueue(api) {
   const q = queueList();
   if (!q.length) return;
-  const chans = channels().filter((c) => c.auto);
-  const item = q[0];
+  const cfg = postPolicy();
+  const now = Date.now();
+  if (!cfg.enabled || inQuietHours(cfg, now)) return;
+  const postedToday = store.get('stats', 'channel_posts:' + todayTehran()) || 0;
+  if (postedToday >= cfg.maxPerDay) return;
+  const lastPost = store.get('stats', 'last_channel_post') || 0;
+  if (now - lastPost < cfg.minGapMs) return;
+  const item = q.find((x) => !x.at || x.at <= now);
+  if (!item) return;
+  const chans = channels().filter((c) => c.auto !== false);
   try {
     for (const ch of (chans.length ? chans : channels())) {
       if (item.targets && !item.targets.includes(String(ch.id))) continue;
       await sendPost(api, ch.id, item.tr, ch.lang || 'fa');
       await new Promise((r) => setTimeout(r, 1500));
     }
-    q.shift();
-    saveQueue(q);
+    saveQueue(q.filter((x) => x !== item));
+    store.set('stats', 'channel_posts:' + todayTehran(), postedToday + 1);
+    store.set('stats', 'last_channel_post', now);
   } catch (e) { log.warn('queue drain', e.message); }
 }
 
@@ -190,4 +219,14 @@ async function cronTick(api) {
   }
 }
 
-module.exports = { channels, saveChannels, follows, saveFollows, queueList, saveQueue, channelStatus, sendPost, sendPreview, scanFollows, drainQueue, cronTick, postCaption, postKb, alreadyPosted, markPosted };
+async function channelSummary(api) {
+  const cfg = postPolicy(), q = queueList(), chans = channels();
+  const st = [];
+  for (const ch of chans.slice(0, 8)) st.push(await channelStatus(api, ch));
+  const last = store.get('stats', 'last_channel_post') || 0;
+  return {
+    cfg, queued: q.length, channels: chans.map((c, i) => ({ id: c.id, title: c.title, auto: c.auto !== false, status: st[i] && st[i].ok, reason: st[i] && st[i].reason })), lastPost: last,
+  };
+}
+
+module.exports = { channels, saveChannels, follows, saveFollows, queueList, saveQueue, postPolicy, savePostPolicy, channelStatus, channelSummary, sendPost, sendPreview, scanFollows, drainQueue, cronTick, postCaption, postKb, alreadyPosted, markPosted };

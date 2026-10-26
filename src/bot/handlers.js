@@ -286,11 +286,16 @@ async function _doSearch(ctx, q) {
   const learned = learning[normalize(q)];
   if (learned && learned.sid) items.sort((a,b) => (sc.sidOf(a) === learned.sid ? -1 : 0) - (sc.sidOf(b) === learned.sid ? -1 : 0));
   store.incrStats('search');
-  if (items[0]._score >= 0.86 && sc.isPlayable(items[0])) {
-    store.set('settings', 'search_learning', learnPick(learning, normalize(q), items[0]));
-    return runDownload(ctx, sc.sidOf(items[0]));
+  const artistAliases = new Set((result.items || []).flatMap((x) => [cleanTrackMeta(x.tr).artist, x.tr.artist]).filter(Boolean).map((v) => normalize(v)));
+  const queryTokens = normalize(q).split(/\s+/).filter(Boolean);
+  const nonArtistTokens = queryTokens.filter((token) => ![...artistAliases].some((alias) => alias.split(/\s+/).includes(token)));
+  const top = items[0], second = items[1];
+  const exactDirect = top && sc.isPlayable(top) && top._score >= 0.92 && (!second || top._score - second._score >= 0.15) && nonArtistTokens.length > 0;
+  if (exactDirect) {
+    store.set('settings', 'search_learning', learnPick(learning, normalize(q), top));
+    return runDownload(ctx, sc.sidOf(top));
   }
-  await panel.show(ctx, 'results', { q, page: 1, items: items.slice(0, 15) }, { push: false });
+  await panel.show(ctx, 'results', { q, page: 1, items: items.slice(0, 15), owner: ctx.from.id, at: Date.now() }, { push: false });
 }
 
 function learnPick(map, q, tr) {

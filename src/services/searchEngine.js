@@ -5,8 +5,12 @@ const sc = require('./soundcloud');
 const sh = require('./shazam');
 const { normalize, transliterate, aliasFor, similarity } = require('./query');
 const { cleanTrackMeta } = require('./trackMeta');
+const { getStore } = require('../core/store');
 
 const STOP = new Set(['آهنگ','موزیک','دانلود','متن','ترانه','song','music','download','lyrics','the','official','audio']);
+function storeIncr(field) {
+  try { getStore().incrStats(field); } catch (_) {}
+}
 function analyze(raw) {
   const q = String(raw || '').trim();
   const n = normalize(q);
@@ -54,15 +58,26 @@ async function search(raw, lang) {
         const d = await sh.searchText(window, 8, true);
         const candidates = [...(d && d.results || [])];
         if (d && (d.found || d.artist || d.title)) candidates.unshift(d);
+        const scoredCandidates = [];
         for (const candidate of candidates.slice(0, 5)) {
           if (!candidate.artist || !candidate.title) continue;
           const verified = await sh.lyrics(candidate.artist, candidate.title);
-          if (!verified || !verified.text || lyricOverlap(window, verified.text) < 0.55) continue;
-          const x = await sc.search(`${candidate.artist} ${candidate.title}`, 1, lang);
-          for (const tr of (x.results || [])) merged.set(sc.sidOf(tr), tr);
-          if (merged.size) break;
+          if (!verified || !verified.text) continue;
+          const overlap = lyricOverlap(window, verified.text);
+          if (overlap >= 0.55) scoredCandidates.push({ candidate, overlap });
         }
-        if (merged.size) break;
+        scoredCandidates.sort((x, y) => y.overlap - x.overlap);
+        for (const { candidate, overlap } of scoredCandidates.slice(0, 3)) {
+          const x = await sc.search(`${candidate.artist} ${candidate.title}`, 1, lang);
+          for (const tr of (x.results || [])) {
+            const sid = sc.sidOf(tr);
+            if (merged.has(sid)) continue;
+            merged.set(sid, tr);
+            storeIncr('lyric_success');
+            if (overlap >= 0.55) break;
+          }
+          if (overlap >= 0.75) break;
+        }
       } catch (_) {}
     }
   }

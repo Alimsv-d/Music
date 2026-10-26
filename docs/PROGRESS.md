@@ -67,3 +67,43 @@ Track: live cPanel Node app (`~/music`, branch `cpanel-app`). GitHub `Alimsv-d/M
       order locked
 - [x] live evidence: group `/music googoosh` -> file_id hit, stats++ (no refetch);
       group smartDetect earlier produced a verified send for an artist query
+
+## 2026-10-26 — requested verification pass
+- [x] E2E helper safety reviewed: `tools/e2e` remains gitignored; strict
+      destination allowlist, hidden credential prompts, no secret output, and
+      logout cleanup are in place. No `.env.e2e` or session contents were read.
+- [x] Local unit/regression suite now passes 38/38; `node --check` covers the
+      changed application and E2E helper files; `npm audit --omit=dev` reports
+      zero production vulnerabilities.
+- [x] Implemented requester-scoped group results, group link-rate limits,
+      supported-link auto-handling, safer direct-vs-list gate, `file_id`
+      duration revalidation, channel publish policy/status controls, and
+      scheduled queue timestamps.
+ - [ ] Real Telegram account E2E and channel-post evidence remain pending until
+      `data/e2e.session` is produced by `node tools/e2e/login.js`; no live
+      result is claimed without that session/API evidence.
+
+## 2026-10-26 — root-cause overhaul (Phase 1)
+- [x] F1 root cause CONFIRMED with evidence. Bytes sent for «سقوط – داریوش
+      اقبالی» (sid 76587881, API 333s) via `fetchTrackBuffer→stream` are
+      **4,067,023 bytes, ffprobe duration 333.47s** — complete, not truncated.
+      `mp4check` box tree shows `moof:34, mdat:34, sidx:34, mvex:1` → a
+      **fragmented MP4** (one moof+mdat per ~10s HLS/AAC segment). Telegram's
+      player reads only the first fragment timeline → ~12s playback. Bytes are
+      whole; the container structure is wrong. See docs/AUDIO_ROOT_CAUSE.md.
+- [x] Built `src/lib/mp4check.js` — pure-JS in-memory MP4/fMP4 validator
+      (box tree, moov-before-mdat, mvhd/mdhd/stts duration vs API ±2s, ©nam/©ART
+      tags, fragmentation detection). Verified: source A flags
+      `fragmented:true`; ffmpeg `-c copy -movflags +faststart` remux → `ok:true,
+      progressive, stts 333.48s`.
+- [x] Added owner-only `/audiotest <query|sid>` sending A(current upload),
+      B(m4a `-c copy` faststart), C(mp3 libmp3lame), D(URL send) each with an
+      mp4check verdict caption. All media in memory; nothing written to disk.
+- [x] Added `AUDIO_FORMAT` owner setting (`aset:audio_format`, admin settings
+      panel). Default `mp3` pending owner's A/B/C/D playback confirmation.
+- [x] F7 RESOLVED: `/api/v1/track` raw `transcodings` for سقوط/Yar/googoosh/
+      shadmehr contain ONLY `hls` and `cbc/ctr-encrypted-hls` protocols — there
+      is **no `progressive` protocol in the catalog**. `hasProgressive`/`hasMp3`
+      flags are correct (false), not buggy. No server-side progressive-MP3 path
+      can exist; the fix must be a worker-side progressive-M4A remux or bot-side
+      remux (Phase 2/3).
