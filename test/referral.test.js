@@ -52,3 +52,8 @@ test('referral: stats and top aggregate correctly', () => {
   const t = REF.top(10);
   assert.ok(Array.isArray(t));
 });
+
+test.after(() => {
+  try { store.close(); } catch (_) {}
+  try { require('node:fs').rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch (_) {}
+});
