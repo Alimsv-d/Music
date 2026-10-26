@@ -101,6 +101,51 @@ async function decodeWithFfmpeg(buf, ext) {
   return decodeWithFfmpegPipe(buf);
 }
 
+// MP4/MOV/WEBM are NOT streamable: ffmpeg must seek to moov, so pipe input fails
+// ("partial file / unspecified pixel format"). For video containers write the
+// buffer to a temp file in $TMPDIR, decode from the file, then remove it.
+// Audio-only containers (ogg/mp3/m4a/wav) still decode via the stdin pipe.
+async function decodeWithFfmpegFile(buf, ext, { seconds = 40, timeout = 30000 } = {}) {
+  const config = require('../config');
+  const os = require('node:os');
+  const dir = config.tmpDir || os.tmpdir();
+  const file = require('node:path').join(dir, `recog_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext || 'mp4'}`);
+  fs.writeFileSync(file, buf);
+  try {
+    if (ffActive >= 1) { const e = new Error('ffmpeg busy'); e.code = 'FFMPEG_BUSY'; throw e; }
+    ffActive++;
+    return await new Promise((resolve, reject) => {
+      const args = ['-v', 'error', '-i', file, '-vn', '-t', String(seconds), '-ac', '1', '-ar', '16000', '-f', 's16le', 'pipe:1'];
+      const p = spawn('nice', ['-n', '10', 'ffmpeg', ...args], { stdio: ['ignore', 'pipe', 'ignore'] });
+      const chunks = [];
+      const to = setTimeout(() => { try { p.kill('SIGKILL'); } catch (_) {} ; reject(new Error('ffmpeg timeout')); }, timeout);
+      p.stdout.on('data', (c) => chunks.push(c));
+      p.on('error', (e) => { clearTimeout(to); reject(e); });
+      p.on('close', (code) => {
+        clearTimeout(to);
+        if (code !== 0) return reject(new Error('ffmpeg exit ' + code));
+        const raw = Buffer.concat(chunks);
+        const n = Math.floor(raw.length / 2);
+        const pcm = new Int16Array(n);
+        for (let i = 0; i < n; i++) pcm[i] = raw.readInt16LE(i * 2);
+        resolve(pcm);
+      });
+    });
+  } finally {
+    ffActive--;
+    try { fs.unlinkSync(file); } catch (_) {}
+  }
+}
+
+// Choose pipe vs file decode by container. Video/mp4-family buffers need a
+// seekable file; audio streams can go through the stdin pipe.
+async function decodeMedia(buf, { ext = '', mime = '', seconds = 40 } = {}) {
+  const isVideoContainer = /mp4|mov|webm|m4v|mkv|3gp|avi|mts|m2ts/.test(String(ext).toLowerCase()) || /video/.test(String(mime).toLowerCase());
+  if (isVideoContainer) return decodeWithFfmpegFile(buf, ext || 'mp4', { seconds });
+  try { return await decodeWithFfmpegPipe(buf, { seconds }); }
+  catch (_) { return decodeWithFfmpegFile(buf, ext || 'm4a', { seconds }); }
+}
+
 // register with the heavy-work facade so worker-mode deployments route here
 // via HEAVY_URL instead of local ffmpeg.
 try {
@@ -116,7 +161,7 @@ async function processAudio(ctx, fileRef, lang) {
   const ext = (fp.split('.').pop() || '').toLowerCase();
   const mime = (fileRef.mime || '').toLowerCase();
 
-  // native WAV
+  // native WAV (fast path, no ffmpeg)
   if (ext === 'wav' || mime.includes('wav')) {
     const w = wavToPcm(buf);
     if (w) {
@@ -125,17 +170,35 @@ async function processAudio(ctx, fileRef, lang) {
     }
     // non-PCM wav -> ffmpeg
   }
-  // Try ffmpeg for everything else (ogg/opus voice, mp3, m4a, mp4)
-  if (await hasFfmpeg()) {
-    try {
-      const pcm = await decodeWithFfmpeg(buf, ext || 'bin');
-      if (pcm && pcm.length > 16000) return sh.recognizeBySignature(pcm, { lyrics: true });
-    } catch (e) { log.warn('ffmpeg decode fail', e.message); }
-  } else {
-    // without ffmpeg only wav is supported client-side
-    const e = new Error('unsupported'); e.code = 'UNSUPPORTED'; throw e;
+  // ffmpeg decodes ALL audio/video containers (ogg/opus voice, mp3, m4a,
+  // mp4/mov/webm video incl. gallery clips, video notes). A bare mp4/video is
+  // valid input — only a genuinely audio-free file should yield "no audio".
+  if (!(await hasFfmpeg())) {
+    const e = new Error('ffmpeg not installed'); e.code = 'NO_FFMPEG'; throw e;
   }
-  const e = new Error('no decode'); e.code = 'UNSUPPORTED'; throw e;
+  let pcm = null;
+  const isVideoContainer = /mp4|mov|webm|m4v|mkv|3gp|avi|mts|m2ts/.test(ext) || /video/.test(mime) || fileRef.kind === 'video';
+  try {
+    pcm = isVideoContainer
+      ? await decodeWithFfmpegFile(buf, ext || 'mp4')
+      : await decodeWithFfmpegPipe(buf);
+  } catch (e) {
+    log.warn('ffmpeg decode fail', { code: e.code || 'ERR', msg: e.message, ext, mime });
+    // audio-container fallback: try file-decode once if pipe failed (some m4a/mp4
+    // audio files also have moov-at-end and need seekable input)
+    if (!isVideoContainer) {
+      try { pcm = await decodeWithFfmpegFile(buf, ext || 'm4a'); }
+      catch (e2) {
+        const err = new Error('decode failed'); err.code = e2.code === 'FFMPEG_BUSY' ? 'BUSY' : 'UNSUPPORTED'; throw err;
+      }
+    } else {
+      const err = new Error('decode failed'); err.code = e.code === 'FFMPEG_BUSY' ? 'BUSY' : 'UNSUPPORTED'; throw err;
+    }
+  }
+  if (!pcm || pcm.length <= 16000) {
+    const e = new Error('no audio track'); e.code = 'NO_AUDIO'; throw e;
+  }
+  return sh.recognizeBySignature(pcm, { lyrics: true });
 }
 
 // Transcode arbitrary media bytes to real MP3 in memory via ffmpeg pipes.
@@ -164,4 +227,4 @@ async function transcodeToMp3(buf, { timeout = 90000, quality = '5', durationSec
   } finally { mp3Active--; }
 }
 
-module.exports = { processAudio, fetchTgFile, wavToPcm, resampleTo16kMono, decodeWithFfmpeg, decodeWithFfmpegPipe, transcodeToMp3 };
+module.exports = { processAudio, fetchTgFile, wavToPcm, resampleTo16kMono, decodeWithFfmpeg, decodeWithFfmpegPipe, decodeWithFfmpegFile, decodeMedia, transcodeToMp3 };

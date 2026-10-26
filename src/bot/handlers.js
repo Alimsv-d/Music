@@ -393,7 +393,13 @@ async function doRecognize(ctx, fileRef) {
     await panel.show(ctx, 'recog', { data: d }, { push: false });
   } catch (e) {
     log.warn('recog fail', e.code);
-    await editOrReply(ctx, e.code === 'UNSUPPORTED' ? t(lang, 'recognize_badformat') : t(lang, 'recognize_none'));
+    const msg =
+      e.code === 'NO_FFMPEG' ? t(lang, 'error_service')
+      : e.code === 'NO_AUDIO' ? '⚠️ صدای قابل تشخیصی در این فایل پیدا نشد.'
+      : e.code === 'UNSUPPORTED' ? t(lang, 'recognize_badformat')
+      : e.code === 'BUSY' ? t(lang, 'processing')
+      : t(lang, 'recognize_none');
+    await editOrReply(ctx, msg);
   }
 }
 
@@ -486,8 +492,8 @@ async function instaRecognize(ctx) {
   try {
     const v = pickVariant(item);
     const { buf } = await ig.fetchBuffer(d.source_url, { quality: v && v.quality, index: item.index }, 48 * 1024 * 1024);
-    const { decodeWithFfmpegPipe } = require('./audio');
-    const pcm = await decodeWithFfmpegPipe(buf);
+    const { decodeMedia } = require('./audio');
+    const pcm = await decodeMedia(buf, { ext: 'mp4', mime: 'video/mp4' });
     const rec = await sh.recognizeBySignature(pcm, { lyrics: true });
     if (!rec || !rec.found) { await ctx.reply(t(lang, 'recognize_none')); return; }
     store.incrStats('rec');

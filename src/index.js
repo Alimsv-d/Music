@@ -930,8 +930,8 @@ async function inlineInstaMusic(ctx, b64) {
     if (!item) { await ctx.answerCallbackQuery({ text: t(lang, 'recognize_none'), show_alert: true }); return; }
     const v = item.variants && item.variants[0];
     const { buf } = await ig.fetchBuffer(d.source_url, { quality: v && v.quality, index: item.index }, 48 * 1024 * 1024);
-    const { decodeWithFfmpegPipe } = require('./bot/audio');
-    const pcm = await decodeWithFfmpegPipe(buf);
+    const { decodeMedia } = require('./bot/audio');
+    const pcm = await decodeMedia(buf, { ext: 'mp4', mime: 'video/mp4' });
     const rec = await sh.recognizeBySignature(pcm, { lyrics: false });
     if (!rec || !rec.found) { await ctx.api.sendMessage(uid, t(lang, 'recognize_none')); return; }
     // find downloadable soundcloud match and send
