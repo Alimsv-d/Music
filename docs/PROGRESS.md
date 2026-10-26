@@ -36,3 +36,27 @@ Track: live cPanel Node app (`~/music`, branch `cpanel-app`). GitHub `Alimsv-d/M
 - [ ] Live Checker messages, non-member account, real media metadata, reel recognition, 15-line lyric corpus, inline client selection, and push remain unverified.
 - [x] 2026-10-26: Reel resolver evidence recorded: `Dai1eHIAfLI` returned `E_PRIVATE_OR_NOT_FOUND`/404; no false recognition result was recorded.
 
+
+## 2026-10-26 — direct-send overhaul (this session)
+- [x] Phase A audit: docs/API_AUDIT.md. Catalog is 100% HLS; /stream & /download
+      assemble one m4a for direct mode; browser mode -> /hls + /hls-seg.
+      Telegram URL-sends m4a as document; uploading as .mp3 returns real audio.
+      IG worker is down (resolve 404s all public URLs); Shazam needs WAV/signature.
+- [x] Phase B: in-memory send pipeline (fetchTrackBuffer: stream/download single
+      GET, HLS parallel-stitch <=48MB). No disk, no transcode, no ffprobe/RMS.
+      file_id cached only after Telegram-returned duration +-3s. mediaCache removed.
+- [x] Phase C: perf.js (event-loop monitor, stage timings, /perf). E2E verified:
+      private+group synthetic updates -> file_id cached via 'stream' in ~5-7s.
+- [x] Phase D: group /start & /help respond; smartDetect uses searchEngine
+      ranking, artist-only >=0.75 direct-send + more button; negcache v2. Webhook
+      allowed_updates += edited_message + chosen_inline_result.
+- [x] Phase E: results panel (query heading, title-only buttons, pagination,
+      pop/new filter, close), audio buttons (more-by-artist, share), recog card.
+- [x] Phase F: IG send by URL (<=20MB) or memory relay (<=48MB); recognition via
+      ffmpeg-pipe PCM -> signature. IG worker itself is down (owner to fix).
+- [x] Phase G: referral core (codes, evaluate, maybeVerify, anti-fraud, tiers,
+      /invite /top, menu). Unit-tested 5/5.
+- [x] Phase H: webhook watchdog (5min), startup self-test, crash guards,
+      shared/heavy facade, cf_readiness test, ALWAYS_ON + CLOUDFLARE_READINESS.
+- [ ] Live client-side verification of group replies & inline selection; real
+      reel resolve (blocked on dead IG worker); owner manual steps.
