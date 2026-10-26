@@ -60,3 +60,10 @@ Track: live cPanel Node app (`~/music`, branch `cpanel-app`). GitHub `Alimsv-d/M
       shared/heavy facade, cf_readiness test, ALWAYS_ON + CLOUDFLARE_READINESS.
 - [ ] Live client-side verification of group replies & inline selection; real
       reel resolve (blocked on dead IG worker); owner manual steps.
+- [x] chosen_inline_result handler (stats + learned boost for picked track)
+- [x] referral owner panel (/admin -> 👥 دعوت‌ها): toggle, status counts, held
+      queue approve/reject, CSV export
+- [x] bidi-js devDependency + visual-order snapshot tests (4) — panel/label RTL
+      order locked
+- [x] live evidence: group `/music googoosh` -> file_id hit, stats++ (no refetch);
+      group smartDetect earlier produced a verified send for an artist query

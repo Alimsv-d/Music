@@ -34,6 +34,7 @@ panel.register('admin', async (ctx, p, lang) => {
     [B('🎫 تیکت‌ها', 'a:tickets'), B('🚫 مسدودی‌ها', 'a:bans')],
     [B('🩺 سلامت', 'a:health'), B('⚙️ تنظیمات', 'a:set')],
     [B('🌐 زبان‌ها', 'a:langs'), B('🔌 سرویس‌ها', 'a:features')],
+    [B('👥 دعوت‌ها', 'a:refs')],
     [R('✖️ بستن', 'nav:close'), B('🔄 رفرش', 'a:panel')],
   ];
   return { text, keyboard: kb(rows) };
@@ -128,6 +129,29 @@ panel.register('admin_tickets', async (ctx, p, lang) => {
   const rows = tickets.map(([k, tk]) => [B(`#${k} ${tk.open ? '🟢' : '⚪'} ${(tk.text || '').slice(0, 25)}`, 'atk:' + k)]);
   rows.push([R(t(lang, 'back'), 'a:panel')]);
   return { text: t(lang, 'admin_tickets'), keyboard: kb(rows) };
+});
+
+panel.register('admin_refs', async (ctx, p, lang) => {
+  const REF = require('../services/referral');
+  const c = REF.cfg();
+  const all = store.all('referral').map(([, v]) => v);
+  const by = (s) => all.filter((e) => e.status === s).length;
+  const held = all.filter((e) => e.status === 'held');
+  const newUsers = store.all('users').filter(([, u]) => u.referred_by).length;
+  const text = [
+    '👥 <b>سیستم دعوت</b>',
+    `وضعیت: ${c.enabled ? '🟢 روشن' : '🔴 خاموش'} · سقف نرخ: ${c.rateCap}/ساعت`,
+    `⏳ در انتظار: ${by('pending')} · ✅ تأییدشده: ${by('verified')} · 🚫 ردشده: ${by('rejected')} · ⛔️ نگه‌داشته: ${by('held')}`,
+    `🆕 کاربر از دعوت: ${newUsers}`,
+  ].join('\n');
+  const rows = [
+    [B(c.enabled ? '🔴 خاموش‌کردن دعوت' : '🟢 روشن‌کردن دعوت', 'ref:toggle')],
+  ];
+  for (const [i, e] of held.slice(0, 8).entries()) {
+    rows.push([B(`⛔ ${e.invitee} ← ${e.inviter}`, 'noop'), G('✔', 'refok:' + e.invitee), R('✖', 'refx:' + e.invitee)]);
+  }
+  rows.push([B('📄 CSV', 'ref:csv'), R(t(lang, 'back'), 'a:panel')]);
+  return { text, keyboard: kb(rows) };
 });
 
 // broadcast handled in index via awaiting state

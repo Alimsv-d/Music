@@ -5,7 +5,9 @@
   "description": "Music — a fast, secure Telegram music bot",
   "type": "commonjs",
   "main": "app.js",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node src/index.js",
     "dev": "node src/index.js --polling",
@@ -14,5 +16,8 @@
   },
   "dependencies": {
     "grammy": "^1.46.0"
+  },
+  "devDependencies": {
+    "bidi-js": "^1.1.0"
   }
 }

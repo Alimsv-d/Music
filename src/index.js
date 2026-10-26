@@ -526,7 +526,7 @@ bot.on('callback_query', async (ctx) => {
   const answer = (tx, alert) => ctx.answerCallbackQuery({ text: tx, show_alert: !!alert }).catch(() => {});
 
   // admin guard for a: and ach/atk/cp management
-  const isAdminCb = /^(a:|ach|atk|aset|aub|cp:|bc|gs:)/.test(data);
+  const isAdminCb = /^(a:|ach|atk|aset|aub|cp:|bc|gs:|ref)/.test(data);
   if (isAdminCb && !isOwner(uid) && !data.startsWith('gs:')) { return answer(t(lang, 'admin_only'), true); }
 
   try {
@@ -651,6 +651,35 @@ bot.on('callback_query', async (ctx) => {
     if (data === 'a:set') { await answer(); return panel.show(ctx, 'admin_settings'); }
     if (data === 'a:langs') { await answer(); return panel.show(ctx, 'admin_langs'); }
     if (data === 'a:tickets') { await answer(); return panel.show(ctx, 'admin_tickets'); }
+    if (data === 'a:refs') { await answer(); return panel.show(ctx, 'admin_refs'); }
+    if (data === 'ref:toggle') {
+      const s = store.get('settings', 'ref') || {};
+      s.enabled = !(s.enabled !== false);
+      store.set('settings', 'ref', s);
+      await answer(s.enabled ? 'روشن' : 'خاموش');
+      return panel.show(ctx, 'admin_refs', {}, { push: false });
+    }
+    if (data === 'ref:csv') {
+      await answer();
+      const rows = store.all('referral').map(([k, e]) => [k, e.invitee, e.inviter, e.status, e.reason || '', new Date(e.ts).toISOString()].join(','));
+      const csv = 'id,invitee,inviter,status,reason,ts\n' + rows.join('\n');
+      return ctx.api.sendDocument(ctx.chat.id, new InputFile(Buffer.from(csv), 'referrals.csv'));
+    }
+    if (data.startsWith('refok:')) {
+      const inv = data.slice(6);
+      const u = store.get('users', inv) || {};
+      u.ref_status = 'verified'; store.set('users', inv, u);
+      require('./services/referral').revoke && null;
+      await answer('تأیید شد');
+      return panel.show(ctx, 'admin_refs', {}, { push: false });
+    }
+    if (data.startsWith('refx:')) {
+      const inv = data.slice(5);
+      const u = store.get('users', inv) || {};
+      u.ref_status = 'rejected'; store.set('users', inv, u);
+      await answer('رد شد');
+      return panel.show(ctx, 'admin_refs', {}, { push: false });
+    }
     if (data === 'a:features') { await answer(); return panel.show(ctx, 'admin_features'); }
     if (data.startsWith('feat:')) {
       const key = data.slice(5);
@@ -846,6 +875,23 @@ bot.on('inline_query', async (ctx) => {
     if (!results.length) return ctx.answerInlineQuery([], { cache_time: 10, is_personal: true, button: noQueryButton });
     return ctx.answerInlineQuery(results.slice(0, 8), { cache_time: 30, is_personal: true, button: noQueryButton });
   } catch (e) { log.warn('inline search', e.code || 'service'); return ctx.answerInlineQuery([], { cache_time: 5 }); }
+});
+
+// Track which inline result the user picked: stats + a small learned boost so
+// the chosen track surfaces first next time (and a file_id cache warms).
+bot.on('chosen_inline_result', async (ctx) => {
+  try {
+    const r = ctx.chosenInlineResult;
+    const id = r && r.result_id || '';
+    store.incrStats('inline_pick');
+    const m = id.match(/^[ac](\d+)/);
+    if (m) {
+      const learning = store.get('settings', 'search_learning') || {};
+      const k = 'inline:' + normalize(r.query || '');
+      learning[k] = { sid: m[1], at: Date.now(), count: ((learning[k] && learning[k].count) || 0) + 1 };
+      store.set('settings', 'search_learning', learning);
+    }
+  } catch (_) {}
 });
 
 function guessCaptionQuery(d) {
