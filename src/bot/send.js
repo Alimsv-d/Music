@@ -97,6 +97,19 @@ function streamFileUrl(sid, title, performer) {
   return sc.fileUrl(sid, slug || 'track', 'mp3');
 }
 
+// Probe worker /f/ once (cached 60s) so we only attempt URL-send when it's up.
+let _fUp = { at: 0, ok: false };
+async function fEndpointUp() {
+  if (Date.now() - _fUp.at < 60000) return _fUp.ok;
+  try {
+    const { request } = require('../core/http');
+    // probe a bogus track id; /f/<sid>/... returns 200/206 when deployed, 404 when absent
+    const res = await request(streamFileUrl('0', 'ping', 'mp3'), { method: 'HEAD', timeout: 5000, retries: 0, maxBytes: 1 });
+    _fUp = { at: Date.now(), ok: res.status === 200 || res.status === 206 };
+  } catch (e) { _fUp = { at: Date.now(), ok: false }; }
+  return _fUp.ok;
+}
+
 async function _downloadAndSend(ctx, tr, lang, opts = {}) {
   const store = getStore(), sid = sc.sidOf(tr), meta = require('../services/trackMeta').cleanTrackMeta(tr),
     cacheKey = `${sid}|${meta.artist}|${meta.title}|${META_VERSION}`, chatId = ctx.chat.id,
@@ -119,20 +132,22 @@ async function _downloadAndSend(ctx, tr, lang, opts = {}) {
   } else if (key) store.del('file_id_cache', cacheKey);
 
   // 2) URL-send the worker's validated progressive file (zero bytes through the
-  //    bot). Only when the worker v2 /f/ endpoint is up. Falls back to the
-  //    in-memory remux+upload path on any failure.
-  try {
-    const url = streamFileUrl(sid, title, performer);
-    const sent = await ctx.api.sendAudio(chatId, url, { title, performer, duration: expected || undefined, ...share });
-    if (sent && sent.audio && sent.audio.file_id) {
-      store.set('file_id_cache', cacheKey, {
-        file_id: sent.audio.file_id, v: CACHE_VERSION, metaVersion: META_VERSION,
-        artist: performer, title, duration: sent.audio.duration || expected,
-        validated: true, via: 'url' });
-      return;
-    }
-    try { await ctx.api.deleteMessage(chatId, sent.message_id); } catch (_) {}
-  } catch (_) { /* fall through to in-memory */ }
+  //    bot) — only when /f/ is actually up. A dead/404 endpoint makes Telegram
+  //    fetch HTML and send it as a `document`, which wastes a send+delete.
+  if (await fEndpointUp()) {
+    try {
+      const url = streamFileUrl(sid, title, performer);
+      const sent = await ctx.api.sendAudio(chatId, url, { title, performer, duration: expected || undefined, ...share });
+      if (sent && sent.audio && sent.audio.file_id) {
+        store.set('file_id_cache', cacheKey, {
+          file_id: sent.audio.file_id, v: CACHE_VERSION, metaVersion: META_VERSION,
+          artist: performer, title, duration: sent.audio.duration || expected,
+          validated: true, via: 'url' });
+        return;
+      }
+      try { await ctx.api.deleteMessage(chatId, sent.message_id); } catch (_) {}
+    } catch (_) { /* fall through to in-memory */ }
+  }
 
   // 3) in-memory fetch -> normalise to progressive/seekable container -> upload
   const { InputFile } = require('grammy');

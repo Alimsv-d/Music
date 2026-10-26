@@ -167,3 +167,17 @@ Track: live cPanel Node app (`~/music`, branch `cpanel-app`). GitHub `Alimsv-d/M
 - [x] Instagram "detected song but file not sent": the rdl/igm/igx buttons route
       through runDownload → downloadAndSend → MP3 path (variant C). Combined with
       video-aware decode + URL-fallback this resolves the reported gap.
+
+## 2026-10-26 — file-send reliability (reported gap)
+- [x] `/f/` URL-send is now gated on an actual liveness probe (HEAD, cached
+      60s): when the worker endpoint isn't deployed it is skipped entirely, so
+      no wasted document send + delete round-trip. In-memory remux+upload is
+      the guaranteed fallback.
+- [x] recogDownload/instaMusic now pick the first PLAYABLE search result
+      (isPlayable) instead of results[0], so encrypted/non-downloadable tracks
+      are never chosen and silently fail.
+- [x] Alert/error answers now surface as real replies when there is no
+      callbackQuery — download failures and the "processing" rate-limit toast
+      are visible instead of silent.
+- [x] Verified on host: full chain query → fetch → remux → mp3 produces valid
+      output for real tracks; video-aware decode confirmed.

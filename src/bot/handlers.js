@@ -516,7 +516,9 @@ async function recogDownload(ctx, b64) {
   await answer(ctx, t(lang, 'searching'));
   try {
     const d = await sc.search(q, 1, lang);
-    const tr = d.results && d.results[0];
+    // pick the first PLAYABLE result (not just results[0]) so we never send a
+    // non-downloadable/encrypted track that silently fails at send time.
+    const tr = (d.results || []).find((r) => sc.isPlayable(r)) || (d.results || [])[0];
     if (!tr) { await ctx.reply(t(lang, 'no_results')); return; }
     await runDownload(ctx, sc.sidOf(tr));
   } catch (e) { await ctx.reply(t(lang, 'error_service')); }
