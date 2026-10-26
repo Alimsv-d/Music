@@ -100,7 +100,8 @@ Track: live cPanel Node app (`~/music`, branch `cpanel-app`). GitHub `Alimsv-d/M
       B(m4a `-c copy` faststart), C(mp3 libmp3lame), D(URL send) each with an
       mp4check verdict caption. All media in memory; nothing written to disk.
 - [x] Added `AUDIO_FORMAT` owner setting (`aset:audio_format`, admin settings
-      panel). Default `mp3` pending owner's A/B/C/D playback confirmation.
+      panel). Default `mp3`; owner confirmed version C plays fully with a correct
+      seek bar and music header in Telegram.
 - [x] F7 RESOLVED: `/api/v1/track` raw `transcodings` for سقوط/Yar/googoosh/
       shadmehr contain ONLY `hls` and `cbc/ctr-encrypted-hls` protocols — there
       is **no `progressive` protocol in the catalog**. `hasProgressive`/`hasMp3`
@@ -111,13 +112,14 @@ Track: live cPanel Node app (`~/music`, branch `cpanel-app`). GitHub `Alimsv-d/M
       remuxer (parses moof/traf/tfhd/trun, rewrites mvhd/mdhd/stts/stsz/stsc/stco,
       embeds ©nam/©ART). Verified vs ffmpeg `-c copy +faststart`: identical
       duration 333.473s, all 14362 packets preserved, decodes cleanly to EOF.
-- [x] Fixed the mp3-transcode pitfall: fMP4 `tfdt` base-time gaps made ffmpeg
-      stretch output to 435s (vs 333s). `transcodeToMp3` now caps with `-t`.
+- [x] MP3 pipe caveat: ffprobe estimates 435s for the non-seekable piped MP3
+      by average bitrate, but full ffmpeg decode ends at 333.5s and packet PTS
+      ends at 333.5s. Owner confirmed Telegram variant C playback and seek bar are
+      correct. Do not use pipe-based ffprobe container estimate as playback truth.
 - [x] Phase 3 partial: `send.js` `normalizeAudio()` now runs every send through
-      the remuxer (default `audio_format=m4a`, owner-toggleable to `mp3`). Output
-      verified: `via=stream+remux`, mp4check ok, progressive, correct tags.
-      This is the actual F1 fix on the live path — needs owner /audiotest + a
-      live sendAudio to confirm the Telegram player shows full seek bar.
+      the remuxer (default `audio_format=mp3`, owner-toggleable to `m4a`). The
+      owner confirmed C in real Telegram: full playback, correct seek bar and
+      music header. No media is written to disk.
 
 ## 2026-10-26 — Phases 4–6 evidence pass
 - [x] Phase 4 (Instagram): root cause CONFIRMED with evidence. The worker

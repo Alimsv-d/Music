@@ -26,19 +26,28 @@ even though every byte is present.
   `mp4check` → `ok:true`, `fragmented:false`, `moovBeforeMdat:true`,
   `stts:333.48s`, box order `ftyp,moov,free,mdat`. Structurally equivalent to a
   proper file. **No re-encode** — bitstream copied.
-- **C — MP3** via `libmp3lame -q:a 5` (in-memory): 4,673,150 bytes, `ID3` header,
-  `ffprobe duration 333.53s` — full length, correct.
-- **D — URL send**: `/stream`/`/download` return `application/octet-stream` +
+- **C — MP3** via `libmp3lame -q:a 5` (remuxed progressive input, in-memory):
+  owner-confirmed in Telegram: full playback and correct seek bar. ffmpeg decodes
+  through **5:33.5** (333.5s); packet timestamps also end at 333.5s. Note: ffprobe's
+  MP3 container-duration estimate over a non-seekable pipe reports 7:15.5 from
+  average bitrate; that estimate is not the decoded playback duration.
+- **D — URL send**: the current `/stream`/`/download` return `application/octet-stream` +
   `*.m4a` filename and ignore `Range` → Telegram URL-send lands as `document`
-  (per API_AUDIT). Documented service defect; not a bot bug.
+  (per API_AUDIT). The new worker `/f/` endpoint is not deployed yet.
 
 ## Decision
 
-- `AUDIO_FORMAT` default = **`m4a` path requires remux**; since the source is
-  fMP4 the only way to a *progressive* file without re-encoding is an in-memory
-  `-c copy -movflags +faststart` remux (variant B). If remux is unavailable or
-  CPU-constrained, variant C (mp3) is the fallback.
+- **Owner selected C (MP3)** after real Telegram playback: full duration, correct
+  seek bar, and music header. `AUDIO_FORMAT` default is **`mp3`**; only an explicit
+  owner setting of `m4a` selects the progressive-M4A remux path.
+- Pipeline order for C: fetch HLS bytes → pure-JS progressive remux →
+  `libmp3lame -q:a 5` → multipart upload with `.mp3` filename and explicit
+  `title`/`performer`. The progressive remux before encoding avoids fMP4 `tfdt`
+  timestamp gaps. No media is written to disk.
+- The file_id duration echo is NOT validation (F2); cache acceptance requires
+  correct output metadata/container checks. Telegram's returned duration alone
+  is not used as proof of file integrity.
 - Forensic checker `src/lib/mp4check.js` rejects fragmented (`moof/mvex/sidx`)
   files and validates mvhd/mdhd/stts duration vs API ±2s.
-- Owner compares real playback via `/audiotest <track>` (A/B/C/D) before flipping
-  `settings.global.audio_format`.
+- Variant D remains blocked until worker staging is deployed and URL-send is
+  confirmed to return Telegram `audio` (not `document`).

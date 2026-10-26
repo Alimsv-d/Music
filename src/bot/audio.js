@@ -147,11 +147,11 @@ async function transcodeToMp3(buf, { timeout = 90000, quality = '5', durationSec
   mp3Active++;
   try {
     return await new Promise((resolve, reject) => {
-      const args = ['-v', 'error', '-i', 'pipe:0', '-vn'];
-      // cap at the expected duration: fMP4 tfdt gaps can otherwise stretch the
-      // output (encoder inserts silence for the gap between fragments).
+      // -t must be an INPUT option (before -i): the fMP4 source carries tfdt gaps
+      // that otherwise stretch the decoded timeline (435s for a 333s track).
+      const args = ['-v', 'error'];
       if (durationSec) args.push('-t', String(durationSec + 1));
-      args.push('-c:a', 'libmp3lame', '-q:a', String(quality), '-f', 'mp3', 'pipe:1');
+      args.push('-i', 'pipe:0', '-vn', '-c:a', 'libmp3lame', '-q:a', String(quality), '-f', 'mp3', 'pipe:1');
       const p = spawn('nice', ['-n', '10', 'ffmpeg', ...args], { stdio: ['pipe', 'pipe', 'ignore'] });
       const chunks = [];
       const to = setTimeout(() => { try { p.kill('SIGKILL'); } catch (_) {} ; reject(new Error('ffmpeg timeout')); }, timeout);

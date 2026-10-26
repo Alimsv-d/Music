@@ -9,7 +9,7 @@ const { getStore } = require('../core/store');
 const log = require('../core/log');
 
 const MAX_BYTES = 48 * 1024 * 1024;
-const CACHE_VERSION = 'v5';
+const CACHE_VERSION = 'v6-mp3-progressive';
 const META_VERSION = 'cleanTrackMeta-v2';
 
 // Output container preference for the audio send path. 'mp3' (default) uploads
@@ -19,9 +19,10 @@ const META_VERSION = 'cleanTrackMeta-v2';
 // `document`. Changeable from the owner settings panel.
 function audioFormat() {
   const s = getStore().get('settings', 'global') || {};
-  // default 'm4a': lossless remux to a progressive, seekable container (fixes F1
-  // without re-encoding). 'mp3' re-encodes as a fallback.
-  return s.audio_format === 'mp3' ? 'mp3' : 'm4a';
+  // Owner-verified: MP3 (variant C) plays fully with a correct seek bar and
+  // performer/title in Telegram. Default = 'mp3'. 'm4a' selects the lossless
+  // progressive-remux path (kept for the /audiotest A/B/C/D comparison).
+  return s.audio_format === 'm4a' ? 'm4a' : 'mp3';
 }
 
 function audioCaption(tr, lang) {
@@ -67,25 +68,23 @@ async function normalizeAudio(tr, sid = sc.sidOf(tr)) {
   const fmt = audioFormat();
   const { remux } = require('../lib/mp4remux');
   const { transcodeToMp3 } = require('./audio');
-  // mp3 fallback is opt-in; m4a progressive remux is the default.
-  if (fmt === 'mp3') {
-    const mp3 = await transcodeToMp3(buf, { durationSec: expected });
-    if (!mp3 || mp3.length < 40 * 1024) { const e = new Error('mp3 too small'); e.code = 'TOO_SMALL'; throw e; }
-    return { buf: mp3, ext: 'mp3', mime: 'audio/mpeg', via: via + '+mp3', size: mp3.length };
+  // Always normalise to a progressive MP4 first: the fMP4 source has tfdt gaps
+  // that make a direct MP3 encode stretch the timeline (435s for a 333s track).
+  // From the remuxed buffer the timeline is continuous, so MP3 duration matches.
+  let prog = buf;
+  if (!struct.ok) {
+    try { prog = remux(buf, { title: meta.title, artist: meta.artist }); }
+    catch (e) { const er = new Error('remux failed'); er.code = 'REMUX_FAIL'; throw er; }
+    const ok = mp4check.check(prog, { expectedSeconds: expected });
+    if (!ok.ok) { const e = new Error('remux invalid: ' + ok.reasons.join(',')); e.code = 'REMUX_INVALID'; throw e; }
   }
-  // m4a: lossless remux to progressive MP4 (source is fMP4 from HLS stitching)
-  try {
-    const out = struct.ok ? buf : remux(buf, { title: meta.title, artist: meta.artist });
-    const ok = mp4check.check(out, { expectedSeconds: expected });
-    if (ok.ok) return { buf: out, ext: 'm4a', mime: 'audio/mp4', via: via + '+remux', size: out.length };
-    const e = new Error('remux produced invalid file: ' + ok.reasons.join(',')); e.code = 'REMUX_INVALID'; throw e;
-  } catch (e) {
-    if (e.code === 'REMUX_INVALID') throw e;
-    // remux code error -> last resort: try mp3 transcode capped at expected duration
-    const mp3 = await transcodeToMp3(buf, { durationSec: expected }).catch(() => null);
-    if (mp3 && mp3.length > 40 * 1024) return { buf: mp3, ext: 'mp3', mime: 'audio/mpeg', via: via + '+mp3fb', size: mp3.length };
-    throw e;
+  if (fmt === 'm4a') {
+    return { buf: prog, ext: 'm4a', mime: 'audio/mp4', via: via + '+remux', size: prog.length };
   }
+  // default mp3 path (owner-verified full playback + seek bar)
+  const mp3 = await transcodeToMp3(prog, { durationSec: expected });
+  if (!mp3 || mp3.length < 40 * 1024) { const e = new Error('mp3 too small'); e.code = 'TOO_SMALL'; throw e; }
+  return { buf: mp3, ext: 'mp3', mime: 'audio/mpeg', via: via + '+remux+mp3', size: mp3.length };
 }
 
 async function downloadAndSend(ctx, tr, lang, opts = {}) {
