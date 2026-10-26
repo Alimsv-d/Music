@@ -94,38 +94,37 @@ async function sendPost(api, chId, tr, lang = 'fa', opts = {}) {
     const demo = await makeDemo(tr);
     if (demo) {
       const { InputFile } = require('grammy');
-      await api.sendVoice(chId, new InputFile(demo.path, `${tr.artist} - ${tr.title}`.slice(0, 60) + '.mp3'), {
+      await api.sendVoice(chId, new InputFile(demo.buf, `${tr.artist} - ${tr.title}`.slice(0, 60) + '.mp3'), {
         duration: Math.min(30, Math.round((tr.duration_ms || 0) / 1000) || 30),
         reply_to_message_id: msg.message_id, ...(opts.silent ? { disable_notification: true } : {}),
       });
     }
-    if (demo && demo.path) { const fs = require('node:fs'); try { fs.unlinkSync(demo.path); } catch (_) {} }
   } catch (e) { log.warn('demo', e.message); }
   markPosted(tr);
   return msg;
 }
 
-// Build a ~30s demo clip from the stream. ffmpeg for clean cut; else Range-short.
+// Build a ~30s demo clip from the stream entirely via ffmpeg pipes — no disk.
 async function makeDemo(tr) {
-  const fs = require('node:fs'), path = require('node:path');
-  const { execFile } = require('node:child_process');
+  const { spawn } = require('node:child_process');
   const sid = sc.sidOf(tr);
-  const src = path.join(config.tmpDir, `demo_src_${sid}_${Date.now()}`);
-  const out = src + '.mp3';
   try {
-    // fetch ~ first 1.5MB of stream (enough for a short clip)
     const { request } = require('../core/http');
     const res = await request(sc.streamUrl(sid), { timeout: 30000, maxBytes: 2 * 1024 * 1024 });
-    fs.writeFileSync(src, res.body);
-    const ok = await new Promise((res2) => execFile('ffmpeg', ['-v', 'error', '-i', src, '-t', '30', '-acodec', 'libmp3lame', '-b:a', '96k', out], { timeout: 30000 }, (e) => res2(!e)));
-    try { fs.unlinkSync(src); } catch (_) {}
-    if (ok && fs.existsSync(out) && fs.statSync(out).size > 20000) return { path: out };
+    const src = res.body;
+    const out = await new Promise((resolve, reject) => {
+      const p = spawn('nice', ['-n', '10', 'ffmpeg', '-v', 'error', '-i', 'pipe:0', '-t', '30', '-acodec', 'libmp3lame', '-b:a', '96k', '-f', 'mp3', 'pipe:1'], { stdio: ['pipe', 'pipe', 'ignore'] });
+      const chunks = [];
+      const to = setTimeout(() => { try { p.kill('SIGKILL'); } catch (_) {} ; reject(new Error('ffmpeg timeout')); }, 30000);
+      p.stdout.on('data', (c) => chunks.push(c));
+      p.on('error', (e) => { clearTimeout(to); reject(e); });
+      p.on('close', (code) => { clearTimeout(to); code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error('exit ' + code)); });
+      p.stdin.on('error', () => {});
+      p.stdin.write(src); p.stdin.end();
+    });
+    if (out.length > 20000) return { buf: out };
     return null;
-  } catch (_) {
-    try { fs.unlinkSync(src); } catch (_) {}
-    try { fs.unlinkSync(out); } catch (_) {}
-    return null;
-  }
+  } catch (_) { return null; }
 }
 
 // produce a preview to owner with action buttons

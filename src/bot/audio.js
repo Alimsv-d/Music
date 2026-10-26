@@ -65,21 +65,40 @@ function resampleTo16kMono(pcm, rate, ch) {
   return out;
 }
 
-async function decodeWithFfmpeg(buf, ext) {
-  const tmp = path.join(config.tmpDir, 'in_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7) + '.' + ext);
-  const out = tmp + '.raw';
-  fs.writeFileSync(tmp, buf);
+const { spawn } = require('node:child_process');
+
+// Decode media bytes to 16kHz mono PCM via ffmpeg pipes — NO disk writes.
+// Reads buf from stdin, writes s16le to stdout. Runs niced, single instance.
+let ffActive = 0;
+async function decodeWithFfmpegPipe(buf, { seconds = 40, timeout = 30000 } = {}) {
+  if (ffActive >= 1) { const e = new Error('ffmpeg busy'); e.code = 'FFMPEG_BUSY'; throw e; }
+  ffActive++;
   try {
-    await new Promise((res, rej) => execFile('ffmpeg', ['-v', 'error', '-i', tmp, '-t', '40', '-ac', '1', '-ar', '16000', '-f', 's16le', out], { timeout: 60000 }, (e) => e ? rej(e) : res()));
-    const raw = fs.readFileSync(out);
-    const n = Math.floor(raw.length / 2);
-    const pcm = new Int16Array(n);
-    for (let i = 0; i < n; i++) pcm[i] = raw.readInt16LE(i * 2);
-    return pcm;
-  } finally {
-    try { fs.unlinkSync(tmp); } catch (_) {}
-    try { fs.unlinkSync(out); } catch (_) {}
-  }
+    return await new Promise((resolve, reject) => {
+      const args = ['-v', 'error', '-i', 'pipe:0', '-t', String(seconds), '-ac', '1', '-ar', '16000', '-f', 's16le', 'pipe:1'];
+      const p = spawn('nice', ['-n', '10', 'ffmpeg', ...args], { stdio: ['pipe', 'pipe', 'ignore'] });
+      const chunks = [];
+      const to = setTimeout(() => { try { p.kill('SIGKILL'); } catch (_) {} ; reject(new Error('ffmpeg timeout')); }, timeout);
+      p.stdout.on('data', (c) => chunks.push(c));
+      p.on('error', (e) => { clearTimeout(to); reject(e); });
+      p.on('close', (code) => {
+        clearTimeout(to);
+        if (code !== 0) return reject(new Error('ffmpeg exit ' + code));
+        const raw = Buffer.concat(chunks);
+        const n = Math.floor(raw.length / 2);
+        const pcm = new Int16Array(n);
+        for (let i = 0; i < n; i++) pcm[i] = raw.readInt16LE(i * 2);
+        resolve(pcm);
+      });
+      p.stdin.on('error', () => {});
+      p.stdin.write(buf); p.stdin.end();
+    });
+  } finally { ffActive--; }
+}
+
+// Back-compat name — now purely in-memory (pipe), no disk.
+async function decodeWithFfmpeg(buf, ext) {
+  return decodeWithFfmpegPipe(buf);
 }
 
 // fileRef: {file_id, mime, name}
@@ -110,4 +129,4 @@ async function processAudio(ctx, fileRef, lang) {
   const e = new Error('no decode'); e.code = 'UNSUPPORTED'; throw e;
 }
 
-module.exports = { processAudio, fetchTgFile, wavToPcm, resampleTo16kMono, decodeWithFfmpeg };
+module.exports = { processAudio, fetchTgFile, wavToPcm, resampleTo16kMono, decodeWithFfmpeg, decodeWithFfmpegPipe };

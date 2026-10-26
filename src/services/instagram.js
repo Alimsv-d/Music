@@ -1,7 +1,7 @@
 'use strict';
 // Instagram service client.
 const config = require('../config');
-const { getJson, downloadTo } = require('../core/http');
+const { getJson, downloadTo, request } = require('../core/http');
 
 const base = () => config.instaApi;
 
@@ -38,9 +38,14 @@ function thumbUrl(mediaUrl) {
 async function downloadFile(postUrl, sel, filePath, maxBytes = 80 * 1024 * 1024) {
   await downloadTo(downloadUrlFor(postUrl, sel), filePath, { timeout: 120000, maxBytes });
 }
+// Fetch a media variant fully into memory (no disk).
+async function fetchBuffer(postUrl, sel, maxBytes = 48 * 1024 * 1024) {
+  const res = await request(downloadUrlFor(postUrl, sel), { timeout: 90000, retries: 2, maxBytes });
+  return { buf: res.body, contentType: res.headers['content-type'] || '' };
+}
 async function health() {
   const t0 = Date.now();
   try { const d = await getJson(base() + '/health', { timeout: 8000, retries: 1 }); return { ok: !!d.ok, ms: Date.now() - t0 }; }
   catch (e) { return { ok: false, ms: Date.now() - t0, error: e.code || e.message }; }
 }
-module.exports = { isInstaUrl, cleanUrl, resolve, downloadUrlFor, thumbUrl, downloadFile, health, ServiceError, INSTA_RE };
+module.exports = { isInstaUrl, cleanUrl, resolve, downloadUrlFor, thumbUrl, downloadFile, fetchBuffer, health, ServiceError, INSTA_RE };

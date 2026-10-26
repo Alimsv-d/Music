@@ -52,10 +52,14 @@ test('cleanTrackMeta strips noise and version', () => {
   assert.equal(m.title.toLowerCase().includes('320'), false);
 });
 
-test('isPlayable prefers real mp3/progressive over encrypted hls', () => {
+test('isPlayable treats downloadable/streamable tracks as playable', () => {
   assert.equal(isPlayable({ hasMp3: true }), true);
   assert.equal(isPlayable({ hasProgressive: true }), true);
-  assert.equal(isPlayable({ hasMp3: false, hasProgressive: false, hasHls: true, downloadable: true }), false);
+  // catalog is effectively all-HLS; downloadable/streamable tracks are playable
+  // (worker assembles direct-mode files, browser-mode stitches via /hls-seg)
+  assert.equal(isPlayable({ hasMp3: false, hasProgressive: false, hasHls: true, downloadable: true }), true);
+  assert.equal(isPlayable({ downloadable: false, streamable: false }), false);
+  assert.equal(isPlayable(null), false);
 });
 
 test('sidOf normalizes sc_ prefix', () => assert.equal(sidOf({ id: 'sc_1', sid: '1' }), '1'));

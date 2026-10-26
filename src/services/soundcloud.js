@@ -24,9 +24,13 @@ async function call(path, params, timeout) {
 }
 
 function sidOf(track) { return String(track.sid || (track.id || '').replace(/^sc_/, '')); }
-// Playable = unencrypted MP3/progressive (Telegram/ffmpeg can fully decode).
-// Encrypted HLS (m4a/CENC) is NOT playable by ffmpeg -> skip those.
-function isPlayable(t) { return !!(t && (t.hasMp3 || t.hasProgressive || (t.downloadable && !t.hasHls))); }
+// Playable = the worker can produce a complete media file for the track.
+// The catalog is effectively all-HLS: /download and /stream assemble a single
+// fMP4/m4a for "direct" mode, and /hls+/hls-seg provide segments for "browser"
+// mode. check=1 distinguishes, but cheaply we just need downloadable||streamable.
+function isPlayable(t) {
+  return !!(t && (t.hasMp3 || t.hasProgressive || t.downloadable || t.streamable));
+}
 
 async function search(q, page = 1, lang) {
   const key = `s:${q.toLowerCase()}:${page}`;
@@ -136,6 +140,56 @@ async function downloadHls(idOrSid, filePath, { maxBytes = 50 * 1024 * 1024, con
   } finally { try { fs.closeSync(fd); } catch (_) {} }
 }
 
+// Fetch a whole media response into memory (no disk). Returns Buffer.
+async function fetchBuffer(url, { timeout = 90000, maxBytes = 48 * 1024 * 1024, retries = 2 } = {}) {
+  const res = await request(url, { timeout, retries, maxBytes });
+  const ct = String(res.headers['content-type'] || '').toLowerCase();
+  const head = res.body.slice(0, 16).toString('utf8');
+  if (ct.includes('application/json') || /^\s*\{/.test(head) || /^#EXTM3U/i.test(res.body.slice(0, 8).toString('utf8'))) {
+    const e = new Error('endpoint returned manifest/json, not media'); e.code = 'NOT_MEDIA'; throw e;
+  }
+  return res.body;
+}
+
+// Assemble an HLS track entirely in memory: init + segments fetched in ordered
+// parallel batches, concatenated into a single fMP4 Buffer. No disk writes.
+async function fetchHlsBuffer(idOrSid, { maxBytes = 48 * 1024 * 1024, concurrency = 4, timeout = 90000 } = {}) {
+  const manifestRes = await request(hlsUrl(idOrSid), { timeout: 20000, maxBytes: 4 * 1024 * 1024 });
+  const text = manifestRes.text();
+  if (!/^#EXTM3U/i.test(text.trim())) { const e = new Error('not an hls manifest'); e.code = 'NOT_HLS'; throw e; }
+  const { init, segs } = parseM3U8(text);
+  if (!segs.length) { const e = new Error('no segments'); e.code = 'EMPTY_MANIFEST'; throw e; }
+  const parts = [];
+  let total = 0;
+  const push = (buf) => { total += buf.length; if (total > maxBytes) { const e = new Error('hls too large'); e.code = 'PAYLOAD_TOO_LARGE'; throw e; } parts.push(buf); };
+  const seg = async (u) => (await request(u, { timeout, retries: 2, maxBytes })).body;
+  if (init) push(await seg(init));
+  for (let i = 0; i < segs.length; i += concurrency) {
+    const batch = segs.slice(i, i + concurrency);
+    const bufs = await Promise.all(batch.map(seg));
+    for (const b of bufs) push(b);
+  }
+  return Buffer.concat(parts, total);
+}
+
+// Fetch the best playable bytes for a track into memory. Chooses single-GET
+// (/stream) for direct mode, HLS stitching for browser/long mode. No disk.
+async function fetchTrackBuffer(idOrSid, { maxBytes = 48 * 1024 * 1024 } = {}) {
+  const sid = String(idOrSid).replace(/^sc_/, '');
+  const chk = await checkDownload(sid).catch(() => null);
+  // browser/long mode -> stitch segments
+  if (chk && chk.ok && chk.mode === 'browser') {
+    const buf = await fetchHlsBuffer(sid, { maxBytes });
+    return { buf, via: 'hls', segments: chk.segments || 0 };
+  }
+  // direct mode (or unknown) -> try single GET endpoints
+  try { return { buf: await fetchBuffer(streamUrl(sid), { maxBytes }), via: 'stream' }; } catch (_) {}
+  try { return { buf: await fetchBuffer(downloadUrl(sid), { maxBytes }), via: 'download' }; } catch (_) {}
+  // last resort: HLS
+  const buf = await fetchHlsBuffer(sid, { maxBytes });
+  return { buf, via: 'hls' };
+}
+
 async function downloadFile(idOrSid, filePath, maxBytes = 50 * 1024 * 1024) {
   const sid = String(idOrSid).replace(/^sc_/, '');
   const fs = require('node:fs');
@@ -167,4 +221,4 @@ async function health() {
   catch (e) { return { ok: false, ms: Date.now() - t0, error: e.code || e.message }; }
 }
 
-module.exports = { search, track, resolveUrl, checkDownload, downloadFile, downloadHls, parseM3U8, streamUrl, downloadUrl, hlsUrl, coverUrl, sidOf, isPlayable, health, ServiceError };
+module.exports = { search, track, resolveUrl, checkDownload, downloadFile, downloadHls, fetchBuffer, fetchHlsBuffer, fetchTrackBuffer, parseM3U8, streamUrl, downloadUrl, hlsUrl, coverUrl, sidOf, isPlayable, health, ServiceError };

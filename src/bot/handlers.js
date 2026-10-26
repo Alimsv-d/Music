@@ -13,7 +13,6 @@ const ig = require('../services/instagram');
 const { normalize, transliterate, aliasFor, isSoundCloudUrl, similarity } = require('../services/query');
 const { cleanTrackMeta } = require('../services/trackMeta');
 const searchEngine = require('../services/searchEngine');
-const mediaCache = require('../services/mediaCache');
 const { downloadAndSend } = require('./send');
 const { processAudio } = require('./audio');
 
@@ -236,8 +235,6 @@ async function doSearch(ctx, q) {
     return editOrReply(ctx, t(lang, 'no_results'));
   }
   let items = result.items.map((x) => ({ ...x.tr, _score: x.score }));
-  // Warm the best few validated audio files for upcoming inline queries.
-  for (const tr of items.slice(0, 3)) mediaCache.warmAudio(tr).catch((e) => log.debug('inline warm failed', { sid: sc.sidOf(tr), code: e.code || 'warm' }));
   // learned manual/previous picks get a small ranking boost
   const learning = store.get('settings', 'search_learning') || {};
   const learned = learning[normalize(q)];
@@ -370,26 +367,34 @@ async function doInsta(ctx, url) {
 
   let sent = 0;
   const { InputFile } = require('grammy');
-  const path = require('node:path'), fs = require('node:fs');
-  // Single media (reel/post): send the actual media with the control buttons
-  // attached to THAT message — never a separate thumbnail card.
+  // Send media directly by URL when small enough; otherwise relay in memory
+  // (no disk). The worker's /download endpoint serves the real media bytes.
   for (const it of items.slice(0, 10)) {
-    let tmp;
     try {
       const v = pickVariant(it);
       if (!v) continue;
-      tmp = path.join(config.tmpDir, `ig_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
-      await ig.downloadFile(d.source_url, { quality: v.quality, index: it.index }, tmp, 80 * 1024 * 1024);
-      const fname = v.filename || `instagram_${it.index}`;
+      const sel = { quality: v.quality, index: it.index };
+      const mediaUrl = ig.downloadUrlFor(d.source_url, sel);
+      const isVideo = it.type === 'video' || (v.mime || '').startsWith('video');
       const caption = it.type === 'video' ? '🎬 <b>Instagram</b>' : '🖼 <b>Instagram</b>';
-      if (it.type === 'video' || (v.mime || '').startsWith('video')) {
-        await ctx.api.sendVideo(ctx.chat.id, new InputFile(tmp, fname), { caption, parse_mode: 'HTML', supports_streaming: true, reply_markup: control });
-      } else {
-        await ctx.api.sendPhoto(ctx.chat.id, new InputFile(tmp, fname), { caption, parse_mode: 'HTML', reply_markup: control });
+      const size = Number(v.size || v.filesize || 0);
+      // try direct URL first (<=20MB); fall back to in-memory relay (<=48MB)
+      let sentOk = false;
+      if (!size || size <= 20 * 1024 * 1024) {
+        try {
+          if (isVideo) await ctx.api.sendVideo(ctx.chat.id, mediaUrl, { caption, parse_mode: 'HTML', supports_streaming: true, reply_markup: control });
+          else await ctx.api.sendPhoto(ctx.chat.id, mediaUrl, { caption, parse_mode: 'HTML', reply_markup: control });
+          sentOk = true;
+        } catch (e) { log.debug('ig url send failed, relaying', e.message); }
+      }
+      if (!sentOk) {
+        const { buf } = await ig.fetchBuffer(d.source_url, sel, 48 * 1024 * 1024);
+        const fname = v.filename || `instagram_${it.index}`;
+        if (isVideo) await ctx.api.sendVideo(ctx.chat.id, new InputFile(buf, fname), { caption, parse_mode: 'HTML', supports_streaming: true, reply_markup: control });
+        else await ctx.api.sendPhoto(ctx.chat.id, new InputFile(buf, fname), { caption, parse_mode: 'HTML', reply_markup: control });
       }
       sent++;
     } catch (e) { log.warn('ig item', e.message); }
-    finally { if (tmp) { try { fs.unlinkSync(tmp); } catch (_) {} } }
     await new Promise((r) => setTimeout(r, 250));
   }
   store.incrStats('download');
@@ -426,13 +431,11 @@ async function instaRecognize(ctx) {
   if (w) { await ctx.reply(t(lang, 'rate_limited', { wait: rl.fmtWait(w, lang, t) })); return; }
   const item = (d.items || []).find((i) => i.type === 'video' || (i.variants || []).some((v) => (v.mime || '').startsWith('video')));
   if (!item) { await ctx.reply(t(lang, 'recognize_none')); return; }
-  const path = require('node:path'), fs = require('node:fs');
-  const tmp = path.join(config.tmpDir, `igv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
   try {
     const v = pickVariant(item);
-    await ig.downloadFile(d.source_url, { quality: v && v.quality, index: item.index }, tmp, 80 * 1024 * 1024);
-    const { decodeWithFfmpeg } = require('./audio');
-    const pcm = await decodeWithFfmpeg(fs.readFileSync(tmp), 'mp4');
+    const { buf } = await ig.fetchBuffer(d.source_url, { quality: v && v.quality, index: item.index }, 48 * 1024 * 1024);
+    const { decodeWithFfmpegPipe } = require('./audio');
+    const pcm = await decodeWithFfmpegPipe(buf);
     const rec = await sh.recognizeBySignature(pcm, { lyrics: true });
     if (!rec || !rec.found) { await ctx.reply(t(lang, 'recognize_none')); return; }
     store.incrStats('rec');
@@ -441,7 +444,7 @@ async function instaRecognize(ctx) {
   } catch (e) {
     log.warn('ig recognize fail', e.code || e.message);
     await ctx.reply(t(lang, 'recognize_none'));
-  } finally { try { fs.unlinkSync(tmp); } catch (_) {} }
+  }
 }
 
 async function recogDownload(ctx, b64) {
