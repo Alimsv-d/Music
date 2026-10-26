@@ -136,3 +136,17 @@ Track: live cPanel Node app (`~/music`, branch `cpanel-app`). GitHub `Alimsv-d/M
       explicit exact-match path (score ≥0.92, margin ≥0.15, non-artist token).
 - [x] F2 corrected: duration-echo on sendAudio is not a content check; real
       structural validation now via mp4check (documented in DECISIONS/QA).
+
+## 2026-10-26 — worker v2 + send-path URL preference
+- [x] `SoundCloud-Worker` branch `fix/v2-soundcloud`: new `GET /f/<sid>/<slug>.<ext>`
+      endpoint assembles HLS in memory and remuxes to a validated progressive MP4
+      (in-worker pure-JS remuxer), returns Content-Length/Accept-Ranges(206)/
+      ETag/X-Audio-Verified/X-Audio-Duration-Ms, 413 TOO_LONG_FOR_PLAN over the
+      free-plan subrequest budget. Remux verified byte-equivalent to ffmpeg
+      `-c copy +faststart` on a real 333s track.
+- [x] Deploy workflow gained `env: staging|production` input (staging -> `<name>-staging`).
+      No GitHub API token on host (git over SSH) — staging deploy needs owner to
+      click "Run workflow" → env=staging on the branch.
+- [x] Bot send path now prefers `sendAudio` by worker `/f/…mp3` URL (zero bytes
+      through the bot), falls back to in-memory remux+upload. Confirmed prod /f/
+      is 404 (not yet deployed) → fallback path verified working (m4a progressive).
