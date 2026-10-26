@@ -26,7 +26,7 @@ async function buildAudioBuffer(tr, sid = sc.sidOf(tr)) {
   return { buf, via, size: buf.length };
 }
 
-async function downloadAndSend(ctx, tr, lang) {
+async function downloadAndSend(ctx, tr, lang, opts = {}) {
   const store = getStore(), sid = sc.sidOf(tr), meta = require('../services/trackMeta').cleanTrackMeta(tr),
     cacheKey = `${sid}|${meta.artist}|${meta.title}|${META_VERSION}`, chatId = ctx.chat.id,
     key = store.get('file_id_cache', cacheKey);
@@ -36,7 +36,7 @@ async function downloadAndSend(ctx, tr, lang) {
   // 1) verified file_id -> instant send
   if (key && key.file_id && key.v === CACHE_VERSION) {
     try {
-      await ctx.api.sendAudio(chatId, key.file_id, { title, performer, duration: key.duration, caption: audioCaption(tr, lang), parse_mode: 'HTML' });
+      await ctx.api.sendAudio(chatId, key.file_id, { title, performer, duration: key.duration, caption: audioCaption(tr, lang), parse_mode: 'HTML', ...(opts.reply_markup ? { reply_markup: opts.reply_markup } : {}) });
       return;
     } catch (_) { store.del('file_id_cache', cacheKey); }
   } else if (key) store.del('file_id_cache', cacheKey);
@@ -48,6 +48,8 @@ async function downloadAndSend(ctx, tr, lang) {
   const file = new InputFile(audio.buf, fname);
   const msg = await ctx.api.sendAudio(chatId, file, {
     title, performer, duration: expected || undefined, caption: audioCaption(tr, lang), parse_mode: 'HTML',
+    ...(opts.reply_markup ? { reply_markup: opts.reply_markup } : {}),
+    ...(opts.reply_to ? { reply_to_message_id: opts.reply_to } : {}),
   });
   const result = msg.audio;
   if (!result || !result.file_id) {

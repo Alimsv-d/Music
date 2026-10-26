@@ -131,7 +131,10 @@ async function checkForceJoin(ctx, options = {}) {
 // ---------- /start ----------
 bot.command('start', async (ctx) => {
   const arg = (ctx.match || '').trim();
-  if (ctx.chat.type !== 'private') return;
+  if (ctx.chat.type !== 'private') {
+    if (rl.groupLimit(ctx.chat.id)) return;
+    return panel.show(ctx, 'help', {}, { push: false });
+  }
   if (!(await checkForceJoin(ctx))) return;
   if (arg.startsWith('t_')) {
     const sid = arg.slice(2);
@@ -359,23 +362,43 @@ function containsLink(msg) {
 }
 
 const smartCd = new Map();
+const SE = require('./services/searchEngine');
 async function smartDetect(ctx, text) {
   const cid = ctx.chat.id;
   const last = smartCd.get(cid) || 0;
   if (Date.now() - last < 20000) return; // group cooldown
-  const key = 'neg:' + normalize(text);
+  const key = 'neg2:' + normalize(text);
   if (store.get('negcache', key)) return;
   try {
-    const d = await sc.search(text, 1, ctx.lang);
-    const top = d.results && d.results[0];
-    if (!top) { store.set('negcache', key, 1); return; }
-    const sim = Math.max(similarity(text, top.title), similarity(text, `${top.artist} ${top.title}`), similarity(text, top.artist));
-    if (sim < 0.5) { store.set('negcache', key, 1); return; }
+    const result = await SE.search(text, ctx.lang);
+    if (result.kind !== 'ok' || !result.items.length) { store.set('negcache', key, 1); return; }
+    const best = result.items[0];
+    // strict bar for unsolicited group responses
+    if (best.score < 0.55) { store.set('negcache', key, 1); return; }
     smartCd.set(cid, Date.now());
     if (rl.groupLimit(cid)) return;
-    // send a compact card with a download button; audio goes to the chat directly
+    const top = best.tr;
+    const meta = cleanTrackMeta(top);
     const sid = sc.sidOf(top);
-    await ctx.reply(`🎵 <b>${esc(top.artist)} — ${esc(top.title)}</b>\n⏱ ${esc(top.duration || '')}`, {
+    // artist-only or strong match -> send the file directly with a "more" button
+    if (best.score >= 0.75 && sc.isPlayable(top)) {
+      const q64 = Buffer.from(text).toString('base64url').slice(0, 48);
+      const mk = kb([[B('🔎 نتایج بیشتر', 'q:' + q64)]]);
+      try {
+        await downloadAndSend(ctx, top, ctx.lang, {
+          reply_markup: mk,
+          reply_to: ctx.message && ctx.message.message_id,
+        });
+      } catch (_) {
+        await ctx.reply(`🎵 <b>${esc(meta.artist)} — ${esc(meta.title)}</b>\n⏱ ${esc(top.duration || '')}`, {
+          parse_mode: 'HTML',
+          reply_markup: kb([[G(t(ctx.lang, 'dl'), 'dl:' + sid)]]),
+        });
+      }
+      store.incrStats('search');
+      return;
+    }
+    await ctx.reply(`🎵 <b>${esc(meta.artist)} — ${esc(meta.title)}</b>\n⏱ ${esc(top.duration || '')}`, {
       parse_mode: 'HTML',
       reply_markup: kb([[G(t(ctx.lang, 'dl'), 'dl:' + sid)]]),
     });
@@ -540,6 +563,11 @@ bot.on('callback_query', async (ctx) => {
     }
     if (data.startsWith('trk:')) { await answer(); return panel.show(ctx, 'track', { sid: data.slice(4) }); }
     if (data.startsWith('dl:')) { return H.runDownload(ctx, data.slice(3)); }
+    if (data.startsWith('q:')) {
+      await answer();
+      const q = Buffer.from(data.slice(2), 'base64url').toString();
+      return q ? H.doSearch(ctx, q) : undefined;
+    }
     if (data.startsWith('lyr:')) { await answer(); return panel.show(ctx, 'lyrics', { sid: data.slice(4) }); }
     if (data.startsWith('sim:')) {
       await answer(t(lang, 'searching'));
@@ -870,6 +898,9 @@ function makeServer() {
     const url = req.url.split('?')[0];
     const reply = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
     if (req.method === 'GET' && url === '/health') return reply(200, { ok: true, uptime: process.uptime(), rss: process.memoryUsage().rss });
+    if (req.method === 'GET' && url === '/diag/' + config.cronSecret) {
+      return reply(200, { lastUpdateSeen, lastDrop, uptime: process.uptime() });
+    }
     if (req.method === 'GET' && url === '/cron/' + config.cronSecret) {
       reply(200, { ok: true });
       setImmediate(() => channel.cronTick(bot.api).catch((e) => log.error('cron', e.message)));

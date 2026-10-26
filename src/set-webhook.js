@@ -9,7 +9,7 @@ async function main() {
   const url = `${config.publicUrl}${config.webhookPath}`;
   await bot.api.setWebhook(url, {
     secret_token: config.webhookSecret,
-    allowed_updates: ['message', 'callback_query', 'inline_query', 'my_chat_member', 'chat_member'],
+    allowed_updates: ['message', 'edited_message', 'callback_query', 'inline_query', 'chosen_inline_result', 'my_chat_member', 'chat_member'],
     drop_pending_updates: false,
     max_connections: 40,
   });

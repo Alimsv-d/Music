@@ -48,3 +48,25 @@ Two distinct codebases exist and MUST NOT be force-merged:
 - 2026-10-26: Force-join is enforced centrally for every user-facing update path rather than only `/start`; membership states are evaluated with `is_member`, positive/negative caches are bounded, and unavailable gates are reported separately instead of locking the user out.
 - 2026-10-26: Group diagnostics and update-drop reasons are structured without secrets. Synthetic webhook delivery is useful for routing tests, but it cannot substitute for a real Telegram delivery/API response.
 - 2026-10-26: Live API checks confirmed the bot is an admin in `Checker`, direct sendMessage succeeds, and the owner is a creator in the configured gate. The requested Reel resolve returned `E_PRIVATE_OR_NOT_FOUND`/404; no music-recognition success is claimed without media bytes.
+
+## Direct-send overhaul (2026-10-26)
+- Media is never written to disk. SoundCloud catalog is effectively 100% HLS:
+  the worker's /stream & /download already assemble a single fMP4/m4a for
+  "direct" mode; "browser" mode (>379s / TRACK_TOO_LONG) is stitched in memory
+  via /hls + /hls-seg (ordered parallel batches, <=48MB).
+- Telegram treats a *.m4a / audio/mp4 URL send as a `document` (no seek bar, no
+  audio.duration). Uploading the same bytes with filename *.mp3 + audio/mpeg
+  returns a real `audio` object -> the pipeline relays bytes in memory and
+  uploads as .mp3 for EVERY audio send, then verifies returned duration +-3s.
+- mediaCache disk cache, top-3 result warming, MP3 transcode, ffprobe and RMS
+  validation removed from the send path. file_id is cached only after the
+  Telegram-returned duration matches the API duration.
+- ffmpeg is only used via stdin/stdout pipes (nice, single instance) for Shazam
+  PCM sampling and the channel demo clip — never on the audio send path.
+- Group smart-detect now uses searchEngine.score (handles artist-only queries);
+  artist-only messages >=0.75 send the file directly with a "more results"
+  button; responses are only sent for score >=0.55 (strict for unsolicited).
+  negcache key bumped to neg2: to drop stale negatives.
+- /start in groups now shows the help card (was a silent no-op). Root cause of
+  "group doesn't answer": command early-return + a stale negcache entry.
+- webhook allowed_updates now include edited_message + chosen_inline_result.

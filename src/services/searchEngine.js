@@ -44,7 +44,7 @@ function lyricOverlap(query, lyrics) {
 async function search(raw, lang) {
   const a = analyze(raw);
   if (a.long || !a.normalized) return { kind: 'invalid', query: a };
-  const settled = await Promise.allSettled(a.variants.slice(0, 3).map((q) => sc.search(q, 1, lang)));
+  const settled = await Promise.allSettled(a.variants.slice(0, 2).map((q) => sc.search(q, 1, lang)));
   const errors = settled.filter((x) => x.status === 'rejected');
   const merged = new Map();
   for (const x of settled) if (x.status === 'fulfilled') for (const tr of (x.value.results || [])) merged.set(sc.sidOf(tr), tr);
