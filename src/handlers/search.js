@@ -90,12 +90,6 @@ async function pageSizeOf(ctx) {
   return Math.max(5, Math.min(20, parseInt(await ctx.cfg("page_size", ctx.env.PAGE_SIZE || 10), 10) || 10));
 }
 
-function looksLikeManifest(u8) {
-  if (!u8 || u8.length < 7) return false;
-  const head = new TextDecoder().decode(u8.subarray(0, 256));
-  return head.startsWith("{") || /^#EXTM3U/i.test(head) || head.startsWith("<?xml") || head.startsWith("<!DOCTYPE");
-}
-
 /** Slim a Track for KV storage in a search handle. */
 function compact(tr) {
   return {
@@ -106,8 +100,9 @@ function compact(tr) {
 }
 
 /**
- * Deliver a track: send the audio file (by file_id when cached, else upload),
- * caption + action buttons, then auto-lyrics.
+ * Deliver a track: file_id when cached, else URL-send only — the Worker never
+ * downloads/buffers the audio bytes (Telegram fetches them from the service
+ * URL directly). caption + action buttons, then auto-lyrics.
  * `trackStub` may be a compact object from KV or a live Track.
  */
 export async function deliverTrack(ctx, msg, trackStub, lang, editCb) {
@@ -139,53 +134,41 @@ export async function deliverTrack(ctx, msg, trackStub, lang, editCb) {
     }
   }
 
+  // 2) DIRECT URL-SEND only — zero bytes through the Worker. Candidates:
+  //   a) /f/<sid>/<slug>.mp3 — validated progressive file -> real `audio`.
+  //   b) tr.downloadUrl / tr.streamUrl — the worker's own media endpoints.
+  // If Telegram returns a non-audio (document) or errors, try the next URL;
+  // if all fail, reply with a direct-link button. Never buffer bytes here.
   if (!sent) {
-    // 2) download + upload. SoundCloud serves m4a/mp3; stream bytes.
-    const maxBytes = (+ctx.env.MAX_UPLOAD_MB || 50) * 1024 * 1024;
-    let bytes = null, ext = "mp3", mime = "audio/mpeg", tooBig = false;
-    try {
-      const urls = [tr.downloadUrl, tr.streamUrl].filter(Boolean);
-      for (const url of urls) {
-        const r = await fetch(url, { headers: { "user-agent": "music-bot", accept: "audio/*,*/*;q=0.8" } });
-        const cl = +(r.headers.get("content-length") || 0);
-        const ct = (r.headers.get("content-type") || "").toLowerCase();
-        if (ct.includes("mp4") || ct.includes("aac") || ct.includes("m4a")) { ext = "m4a"; mime = "audio/mp4"; }
-        if (r.status === 200 && r.body) {
-          if (cl && cl > maxBytes) { tooBig = true; continue; }
-          const head = await r.arrayBuffer();
-          const u8 = new Uint8Array(head);
-          if (looksLikeManifest(u8) || u8.length < 1024) { tooBig = true; continue; }
-          bytes = u8;
-          if (bytes.length > maxBytes) tooBig = true;
-          if (!tooBig) break;
+    const sid0 = String(tr.sid || tr.id || "").replace(/^sc_/, "");
+    const base = (ctx.env.SOUNDCLOUD_API_URL || "").replace(/\/$/, "");
+    const slug = encodeURIComponent(((artist ? artist + " - " : "") + title).replace(/[\\/:*?"<>|]/g, " ").slice(0, 80) || "track");
+    const urls = [
+      sid0 && base ? `${base}/f/${sid0}/${slug}.mp3` : null,
+      tr.downloadUrl, tr.streamUrl,
+    ].filter(Boolean);
+    for (const url of urls) {
+      try {
+        sent = await ctx.tg.sendAudio(chatId, {
+          audio: url, caption, title, performer: artist,
+          duration: Math.round((tr.duration_ms || 0) / 1000), reply_markup: markup,
+        });
+        const fid = sent?.audio?.file_id;
+        if (fid) {
+          ctx.exec.waitUntil(ctx.store.putTrack(key, { file_id: fid, title, artist, duration_ms: tr.duration_ms }));
+          break;
         }
+        // Telegram delivered it as a document/other — delete & try next URL.
+        if (sent && sent.message_id) { try { await ctx.tg.deleteMessage(chatId, sent.message_id); } catch (_) {} }
+        sent = null;
+      } catch (e) {
+        sent = null; // try next URL
       }
-      if (!bytes) tooBig = true;
-    } catch (e) {
-      await ctx.store.logError({ where: "dl", msg: e.message });
-      tooBig = true;
     }
-
-    if (tooBig || !bytes || !bytes.length) {
-      // Send direct-link fallback.
+    if (!sent) {
+      // All URL-sends failed -> give the user a direct link (still no proxying).
       const fb = kb([[urlBtn(t(lang, "dl_direct"), tr.downloadUrl || tr.pageUrl)]]);
       sent = await ctx.tg.sendMessage(chatId, caption + "\n\n" + t(lang, "file_too_big_tg"), { reply_markup: fb });
-    } else {
-      const fname = `${artist ? artist + " - " : ""}${title}`.replace(/[\\/:*?"<>|]/g, " ") + "." + ext;
-      try {
-        sent = await ctx.tg.upload("sendAudio",
-          { chat_id: chatId, caption, title, performer: artist, duration: Math.round((tr.duration_ms || 0) / 1000), reply_markup: markup },
-          "audio", { data: bytes, name: fname, type: mime });
-        // cache the file_id for instant resends
-        const fid = sent?.audio?.file_id;
-        if (fid) ctx.exec.waitUntil(ctx.store.putTrack(key, { file_id: fid, title, artist, duration_ms: tr.duration_ms }));
-      } catch (e) {
-        if (e.code === -1 || e.code >= 500) {
-          await ctx.store.logError({ where: "sendAudio", msg: e.message });
-        }
-        const fb = kb([[urlBtn(t(lang, "dl_direct"), tr.downloadUrl || tr.pageUrl)]]);
-        sent = await ctx.tg.sendMessage(chatId, caption, { reply_markup: fb });
-      }
     }
   }
 
