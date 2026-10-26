@@ -17,6 +17,7 @@ const ig = require('./services/instagram');
 const { normalize, isSoundCloudUrl, similarity } = require('./services/query');
 const perf = require('./core/perf');
 const { downloadAndSend } = require('./bot/send');
+const REF = require('./services/referral');
 const { cleanTrackMeta } = require('./services/trackMeta');
 
 const bot = new Bot(config.botToken);
@@ -146,6 +147,14 @@ bot.command('start', async (ctx) => {
     await H.doSearch(ctx, decodeURIComponent(arg.slice(2)));
     return;
   }
+  if (arg.startsWith('ref_')) {
+    const code = arg.slice(4);
+    const res = REF.evaluate(ctx.from.id, code);
+    if (res && res.status === 'pending' || res && res.status === 'held') {
+      await ctx.reply('👥 دعوت شما ثبت شد؛ با عضویت در کانال و اولین استفاده تأیید می‌شود.').catch(() => {});
+    }
+    return panel.freshMenu(ctx);
+  }
   if (arg.startsWith('ig_')) {
     // deep-link from an inline instagram music button after the user starts the bot
     const q = Buffer.from(arg.slice(3), 'base64url').toString();
@@ -153,6 +162,14 @@ bot.command('start', async (ctx) => {
     return panel.freshMenu(ctx);
   }
   await panel.freshMenu(ctx);
+});
+
+bot.command('invite', async (ctx) => {
+  if (ctx.chat.type !== 'private') return;
+  return panel.show(ctx, 'invite', {}, { push: false });
+});
+bot.command('top', async (ctx) => {
+  return panel.show(ctx, 'top', {}, { push: false });
 });
 
 bot.command(['music', 'search', 'song'], async (ctx) => {
@@ -539,6 +556,8 @@ bot.on('callback_query', async (ctx) => {
       if (m === 'lang') return panel.show(ctx, 'lang');
       if (m === 'support') { H.setAwait(uid, { type: 'ticket' }); return editPanel(ctx, t(lang, 'support_ask'), [[R(t(lang, 'back'), 'nav:menu')]]); }
       if (m === 'help') return panel.show(ctx, 'help');
+      if (m === 'invite') return panel.show(ctx, 'invite');
+      if (m === 'top') return panel.show(ctx, 'top');
       if (m === 'admin') return panel.show(ctx, 'admin');
     }
     if (data.startsWith('lang:')) {
@@ -969,6 +988,9 @@ function makeServer() {
   });
 }
 
+process.on('uncaughtException', (e) => log.error('uncaughtException', e.message));
+process.on('unhandledRejection', (e) => log.error('unhandledRejection', (e && e.message) || String(e)));
+
 async function main() {
   const polling = process.argv.includes('--polling') || !config.publicUrl;
   log.info('Music bot starting', { polling, worker: config.isWorker });
@@ -988,6 +1010,37 @@ async function main() {
     config._cronTimer = setInterval(tick, 5 * 60 * 1000);
     config._eldTimer = setInterval(() => perf.checkLoop(log), 30000);
     config._eldTimer.unref && config._eldTimer.unref();
+
+    // watchdog: verify webhook health every 5min; re-set on error/wrong URL,
+    // alert owner (rate-limited). Also run a startup self-test.
+    let lastWdAlert = 0;
+    const watchdog = async () => {
+      try {
+        const info = await bot.api.getWebhookInfo();
+        const want = `${config.publicUrl}${config.webhookPath}`;
+        const bad = info.url !== want || info.last_error_message;
+        if (bad) {
+          await bot.api.setWebhook(want, { secret_token: config.webhookSecret, allowed_updates: ['message', 'edited_message', 'callback_query', 'inline_query', 'chosen_inline_result', 'my_chat_member', 'chat_member'], max_connections: 40 });
+          if (Date.now() - lastWdAlert > 3600000) {
+            lastWdAlert = Date.now();
+            await bot.api.sendMessage(config.ownerId, `🛰 webhook اصلاح شد${info.last_error_message ? ' · خطا: ' + String(info.last_error_message).slice(0, 80) : ''}`).catch(() => {});
+          }
+        }
+      } catch (e) { log.warn('watchdog', e.message); }
+    };
+    config._wdTimer = setInterval(() => watchdog().catch(() => {}), 5 * 60 * 1000);
+    config._wdTimer.unref && config._wdTimer.unref();
+    // startup self-test
+    setTimeout(async () => {
+      try {
+        const me = await bot.api.getMe().catch(() => null);
+        const wh = await bot.api.getWebhookInfo().catch(() => null);
+        const sc = require('./services/soundcloud'), ig2 = require('./services/instagram'), sh2 = require('./services/shazam');
+        const [h1, h2, h3] = await Promise.all([sc.health(), ig2.health(), sh2.health()]);
+        log.info('self-test', { me: me && me.username, webhook: wh && wh.url, sc: h1.ok, insta: h2.ok, shazam: h3.ok });
+        if (!h1.ok || !h3.ok) await bot.api.sendMessage(config.ownerId, `⚠️ سرویس در دسترس نیست: ${!h1.ok ? 'soundcloud ' : ''}${!h3.ok ? 'shazam' : ''}`).catch(() => {});
+      } catch (_) {}
+    }, 20000).unref?.();
     config._cronTimer.unref && config._cronTimer.unref();
     setTimeout(tick, 30000).unref && setTimeout(tick, 30000).unref();
   }
@@ -997,6 +1050,7 @@ async function main() {
     try { await bot.stop(); } catch (_) {}
     try { config._cronTimer && clearInterval(config._cronTimer); } catch (_) {}
     try { config._eldTimer && clearInterval(config._eldTimer); } catch (_) {}
+    try { config._wdTimer && clearInterval(config._wdTimer); } catch (_) {}
     try { config._server && config._server.close(); } catch (_) {}
     try { store.close(); } catch (_) {}
     process.exit(0);

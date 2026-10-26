@@ -101,6 +101,15 @@ async function decodeWithFfmpeg(buf, ext) {
   return decodeWithFfmpegPipe(buf);
 }
 
+// register with the heavy-work facade so worker-mode deployments route here
+// via HEAVY_URL instead of local ffmpeg.
+try {
+  require('../shared/heavy').registerLocal('decodePcm', async ({ data }) => {
+    const pcm = await decodeWithFfmpegPipe(Buffer.from(data, 'base64'));
+    return { pcm: Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).toString('base64') };
+  });
+} catch (_) {}
+
 // fileRef: {file_id, mime, name}
 async function processAudio(ctx, fileRef, lang) {
   const { buf, path: fp } = await fetchTgFile(fileRef.file_id);

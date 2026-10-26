@@ -40,7 +40,7 @@ panel.register('menu', async (ctx, p, lang) => {
   const rows = [
     [URLB(t(lang, 'menu_addgroup'), `https://t.me/${config.botUsername}?startgroup=true&admin=delete_messages+pin_messages`, 'success')],
     [URLB(t(lang, 'menu_channel'), `https://t.me/${String(config.channel).replace('@', '')}`), B(t(lang, 'menu_lang'), 'm:lang')],
-    [B(t(lang, 'menu_help'), 'm:help'), B(t(lang, 'menu_support'), 'm:support')],
+    [B('👥 دعوت دوستان', 'm:invite'), B(t(lang, 'menu_help'), 'm:help'), B(t(lang, 'menu_support'), 'm:support')],
   ];
   if (own) rows.push([B(t(lang, 'menu_admin'), 'a:panel')]);
   const welcome = String(t(lang, 'welcome', { name: '' })).replace('{bot}', ctx.botUsername || config.botUsername);
@@ -61,6 +61,32 @@ panel.register('lang', async (ctx, p, lang) => {
   }
   rows.push([R(t(lang, 'back'), 'nav:back')]);
   return { text: t(lang, 'lang_title'), keyboard: kb(rows) };
+});
+
+panel.register('invite', async (ctx, p, lang) => {
+  const REF = require('../services/referral');
+  const code = REF.codeFor(ctx.from.id);
+  const link = REF.linkFor(ctx.from.id, config.botUsername);
+  const s = REF.statsFor(ctx.from.id);
+  const bar = '▰'.repeat(Math.min(5, s.verified % 6)) + '▱'.repeat(Math.max(0, 5 - Math.min(5, s.verified)));
+  const share = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent('با این ربات هر آهنگی رو پیدا و دانلود کن 🎵')}`;
+  const text = [
+    '👥 <b>دعوت دوستان</b>',
+    '',
+    '🔗 لینک اختصاصی شما:',
+    `<code>${esc(link)}</code>`,
+    '',
+    `📊 دعوت‌شده: ${num(lang, s.invited)} · تأییدشده: ${num(lang, s.verified)} · امتیاز: ${num(lang, s.points)}`,
+    s.tier && s.tier.name ? `🏅 سطح: ${s.tier.name} ${bar}` : `پیشرفت: ${bar}`,
+  ].join('\n');
+  return { text, keyboard: kb([[URLB('📤 اشتراک لینک', share)], [B('🏆 برترین‌ها', 'm:top')], [R(t(lang, 'back'), 'nav:back')]]) };
+});
+
+panel.register('top', async (ctx, p, lang) => {
+  const REF = require('../services/referral');
+  const list = REF.top(10);
+  const lines = list.length ? list.map((x, i) => `${persianDigits(i + 1)}. ${esc(x.name)} — ${num(lang, x.n)}`) : ['هنوز دعوتی تأیید نشده است.'];
+  return { text: `🏆 <b>برترین دعوت‌کننده‌ها</b>\n${lines.join('\n')}`, keyboard: kb([[R(t(lang, 'back'), 'nav:back')]]) };
 });
 
 panel.register('results', async (ctx, params, lang) => {
@@ -306,6 +332,7 @@ async function runDownload(ctx, sid) {
     pushHistory(uid, tr);
     store.incrStats('download');
     await downloadAndSend(ctx, tr, lang);
+    require('../services/referral').maybeVerify(uid, (inviter, s) => ctx.api.sendMessage(inviter, `✅ یک دعوت شما تأیید شد! مجموع تأییدشده: ${s.verified}`));
   } catch (e) {
     log.warn('dl fail', e.code);
     // auto-alternate: if the source was encrypted/undecodable, try the next playable result.

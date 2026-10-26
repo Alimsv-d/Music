@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const config = require('../config');
 
-const TABLES = ['users', 'chats', 'settings', 'channels', 'posted_tracks', 'queue', 'stats', 'bans', 'file_id_cache', 'tickets', 'favorites', 'history', 'negcache', 'follows'];
+const TABLES = ['users', 'chats', 'settings', 'channels', 'posted_tracks', 'queue', 'stats', 'bans', 'file_id_cache', 'tickets', 'favorites', 'history', 'negcache', 'follows', 'referral'];
 
 let driver;
 try {
@@ -34,7 +34,7 @@ class Store {
 
   _migrateCaches() {
     const current = this.get('settings', 'file_cache_version');
-    const wanted = 'audio-v3-validated-rms';
+    const wanted = 'audio-v5-inmem';
     if (current === wanted) return;
     // Invalidate every old file_id: old pipeline could cache a short/invalid file.
     for (const k of this.keys('file_id_cache')) this.del('file_id_cache', k);
