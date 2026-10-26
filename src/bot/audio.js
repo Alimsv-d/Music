@@ -138,4 +138,30 @@ async function processAudio(ctx, fileRef, lang) {
   const e = new Error('no decode'); e.code = 'UNSUPPORTED'; throw e;
 }
 
-module.exports = { processAudio, fetchTgFile, wavToPcm, resampleTo16kMono, decodeWithFfmpeg, decodeWithFfmpegPipe };
+// Transcode arbitrary media bytes to real MP3 in memory via ffmpeg pipes.
+// niced, single instance, capped. Used by the audio send path to produce a
+// seekable Telegram `audio` object (fixes the fMP4 "12-second" bug, F1/F4).
+let mp3Active = 0;
+async function transcodeToMp3(buf, { timeout = 90000, quality = '5', durationSec = null } = {}) {
+  if (mp3Active >= 1) { const e = new Error('ffmpeg busy'); e.code = 'FFMPEG_BUSY'; throw e; }
+  mp3Active++;
+  try {
+    return await new Promise((resolve, reject) => {
+      const args = ['-v', 'error', '-i', 'pipe:0', '-vn'];
+      // cap at the expected duration: fMP4 tfdt gaps can otherwise stretch the
+      // output (encoder inserts silence for the gap between fragments).
+      if (durationSec) args.push('-t', String(durationSec + 1));
+      args.push('-c:a', 'libmp3lame', '-q:a', String(quality), '-f', 'mp3', 'pipe:1');
+      const p = spawn('nice', ['-n', '10', 'ffmpeg', ...args], { stdio: ['pipe', 'pipe', 'ignore'] });
+      const chunks = [];
+      const to = setTimeout(() => { try { p.kill('SIGKILL'); } catch (_) {} ; reject(new Error('ffmpeg timeout')); }, timeout);
+      p.stdout.on('data', (c) => chunks.push(c));
+      p.on('error', (e) => { clearTimeout(to); reject(e); });
+      p.on('close', (code) => { clearTimeout(to); if (code !== 0) return reject(new Error('ffmpeg exit ' + code)); resolve(Buffer.concat(chunks)); });
+      p.stdin.on('error', () => {});
+      p.stdin.write(buf); p.stdin.end();
+    });
+  } finally { mp3Active--; }
+}
+
+module.exports = { processAudio, fetchTgFile, wavToPcm, resampleTo16kMono, decodeWithFfmpeg, decodeWithFfmpegPipe, transcodeToMp3 };

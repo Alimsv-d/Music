@@ -19,7 +19,9 @@ const META_VERSION = 'cleanTrackMeta-v2';
 // `document`. Changeable from the owner settings panel.
 function audioFormat() {
   const s = getStore().get('settings', 'global') || {};
-  return s.audio_format === 'm4a' ? 'm4a' : 'mp3';
+  // default 'm4a': lossless remux to a progressive, seekable container (fixes F1
+  // without re-encoding). 'mp3' re-encodes as a fallback.
+  return s.audio_format === 'mp3' ? 'mp3' : 'm4a';
 }
 
 function audioCaption(tr, lang) {
@@ -50,6 +52,42 @@ async function buildAudioBuffer(tr, sid = sc.sidOf(tr)) {
   return { buf, via, size: buf.length };
 }
 
+// Normalise the fetched bytes into a *progressive, seekable* container in memory.
+// The SoundCloud catalog is HLS-only: the worker emits fragmented MP4 (fMP4),
+// which Telegram's player truncates to the first fragment (~12s bug, F1). For
+// fMP4 we remux losslessly to progressive MP4 (-c copy equivalent). For the
+// default 'mp3' format we re-encode to real MP3 so Telegram shows a seekable
+// audio object with correct duration and performer/title. No disk writes.
+async function normalizeAudio(tr, sid = sc.sidOf(tr)) {
+  const { buf, via } = await buildAudioBuffer(tr, sid);
+  const mp4check = require('../lib/mp4check');
+  const meta = require('../services/trackMeta').cleanTrackMeta(tr);
+  const expected = Math.round((tr.duration_ms || 0) / 1000);
+  const struct = mp4check.check(buf, { expectedSeconds: expected });
+  const fmt = audioFormat();
+  const { remux } = require('../lib/mp4remux');
+  const { transcodeToMp3 } = require('./audio');
+  // mp3 fallback is opt-in; m4a progressive remux is the default.
+  if (fmt === 'mp3') {
+    const mp3 = await transcodeToMp3(buf, { durationSec: expected });
+    if (!mp3 || mp3.length < 40 * 1024) { const e = new Error('mp3 too small'); e.code = 'TOO_SMALL'; throw e; }
+    return { buf: mp3, ext: 'mp3', mime: 'audio/mpeg', via: via + '+mp3', size: mp3.length };
+  }
+  // m4a: lossless remux to progressive MP4 (source is fMP4 from HLS stitching)
+  try {
+    const out = struct.ok ? buf : remux(buf, { title: meta.title, artist: meta.artist });
+    const ok = mp4check.check(out, { expectedSeconds: expected });
+    if (ok.ok) return { buf: out, ext: 'm4a', mime: 'audio/mp4', via: via + '+remux', size: out.length };
+    const e = new Error('remux produced invalid file: ' + ok.reasons.join(',')); e.code = 'REMUX_INVALID'; throw e;
+  } catch (e) {
+    if (e.code === 'REMUX_INVALID') throw e;
+    // remux code error -> last resort: try mp3 transcode capped at expected duration
+    const mp3 = await transcodeToMp3(buf, { durationSec: expected }).catch(() => null);
+    if (mp3 && mp3.length > 40 * 1024) return { buf: mp3, ext: 'mp3', mime: 'audio/mpeg', via: via + '+mp3fb', size: mp3.length };
+    throw e;
+  }
+}
+
 async function downloadAndSend(ctx, tr, lang, opts = {}) {
   const t0 = Date.now();
   try { await _downloadAndSend(ctx, tr, lang, opts); }
@@ -76,10 +114,10 @@ async function _downloadAndSend(ctx, tr, lang, opts = {}) {
     } catch (_) { store.del('file_id_cache', cacheKey); }
   } else if (key) store.del('file_id_cache', cacheKey);
 
-  // 2) in-memory fetch -> upload as .mp3 -> verify -> cache
+  // 2) in-memory fetch -> normalise to progressive/seekable container -> upload
   const { InputFile } = require('grammy');
-  const audio = await buildAudioBuffer(tr, sid);
-  const fname = (`${performer} - ${title}`.replace(/[\\/:*?"<>|]/g, '_').slice(0, 64) || 'track') + '.mp3';
+  const audio = await normalizeAudio(tr, sid);
+  const fname = (`${performer} - ${title}`.replace(/[\\/:*?"<>|]/g, '_').slice(0, 64) || 'track') + '.' + audio.ext;
   const file = new InputFile(audio.buf, fname);
   const msg = await ctx.api.sendAudio(chatId, file, { title, performer, duration: expected || undefined, ...share });
   const result = msg.audio;
@@ -100,4 +138,4 @@ async function _downloadAndSend(ctx, tr, lang, opts = {}) {
   });
 }
 
-module.exports = { downloadAndSend, buildAudioBuffer, audioCaption, audioButtons, audioFormat, CACHE_VERSION };
+module.exports = { downloadAndSend, buildAudioBuffer, normalizeAudio, audioCaption, audioButtons, audioFormat, CACHE_VERSION };

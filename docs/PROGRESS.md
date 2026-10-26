@@ -107,3 +107,14 @@ Track: live cPanel Node app (`~/music`, branch `cpanel-app`). GitHub `Alimsv-d/M
       flags are correct (false), not buggy. No server-side progressive-MP3 path
       can exist; the fix must be a worker-side progressive-M4A remux or bot-side
       remux (Phase 2/3).
+- [x] Built `src/lib/mp4remux.js` — pure-JS in-memory fMP4→progressive MP4
+      remuxer (parses moof/traf/tfhd/trun, rewrites mvhd/mdhd/stts/stsz/stsc/stco,
+      embeds ©nam/©ART). Verified vs ffmpeg `-c copy +faststart`: identical
+      duration 333.473s, all 14362 packets preserved, decodes cleanly to EOF.
+- [x] Fixed the mp3-transcode pitfall: fMP4 `tfdt` base-time gaps made ffmpeg
+      stretch output to 435s (vs 333s). `transcodeToMp3` now caps with `-t`.
+- [x] Phase 3 partial: `send.js` `normalizeAudio()` now runs every send through
+      the remuxer (default `audio_format=m4a`, owner-toggleable to `mp3`). Output
+      verified: `via=stream+remux`, mp4check ok, progressive, correct tags.
+      This is the actual F1 fix on the live path — needs owner /audiotest + a
+      live sendAudio to confirm the Telegram player shows full seek bar.
