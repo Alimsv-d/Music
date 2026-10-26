@@ -9,7 +9,7 @@ const PATTERNS = [
   { re: /\b\d{8,10}:AA[A-Za-z0-9_-]{30,}/g, name: "telegram bot token" },
   { re: /CLOUDFLARE_API_TOKEN\s*=\s*[^\s"']{10,}/g, name: "CF api token" },
   { re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g, name: "private key" },
-  { re: /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, name: "uuid (review)" },
+  // UUIDs are not secrets by themselves; public service/client IDs are common.
 ];
 
 let hits = 0;

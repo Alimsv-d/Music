@@ -27,11 +27,13 @@
     "CREATOR_NAME": "Ali Mousavi",
     "BOT_NAME": "Music",
 
-    // Backend service base URLs (already deployed by the owner).
-    "SOUNDCLOUD_API_URL": "https://soundcloud-worker.alighost5920.workers.dev",
-    "SHAZAM_API_URL": "https://shazam-worker.alighost5920.workers.dev",
-    "INSTA_API_URL": "https://insta-worker.alighost5920.workers.dev",
-    "LEGACY_INSTA_API_URL": "https://catplus.ir/api/insta",
+    // Backend service base URLs. Leave EMPTY to use the services bundled inside
+    // THIS worker under /svc/<name>/* (self-routing, zero external URLs). To
+    // override with external workers, paste their base URL here instead.
+    "SOUNDCLOUD_API_URL": "",
+    "SHAZAM_API_URL": "",
+    "INSTA_API_URL": "",
+    "LEGACY_INSTA_API_URL": "",
     "LRCLIB_API_URL": "https://lrclib.net",
 
     // Behaviour defaults (can be overridden live from the owner panel; those

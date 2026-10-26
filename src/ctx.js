@@ -31,6 +31,20 @@ export class Ctx {
     return "";
   }
 
+  /**
+   * Point service adapters at THIS worker's bundled /svc/* routes when their
+   * dedicated *_API_URL env vars are empty. Call after ctx.request is set so
+   * the worker can self-route without any external service URL.
+   */
+  bindOrigin(request) {
+    const origin = this.publicUrl(request);
+    if (!origin) return;
+    if (!this.env.SOUNDCLOUD_API_URL) this.sc.base = `${origin}/svc/sc`;
+    if (!this.env.SHAZAM_API_URL) this.shz.base = `${origin}/svc/shz`;
+    if (!this.env.INSTA_API_URL) this.insta.base = `${origin}/svc/ig`;
+    if (!this.env.LEGACY_INSTA_API_URL) this.insta.legacy = `${origin}/svc/ig`;
+  }
+
   /** Resolve a user's language: stored pref > chat cfg > env default. */
   async langFor(userId, chatId) {
     let lang = null;

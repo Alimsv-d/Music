@@ -27,28 +27,29 @@
 
 ```mermaid
 flowchart LR
-  TG[Telegram] -- webhook + secret --> W[Cloudflare Worker]
+  TG[Telegram] -- webhook + secret --> W[ONE Cloudflare Worker]
   W --> KV[(Cloudflare KV)]
-  W --> SC[SoundCloud Worker]
-  W --> SHZ[Shazam Worker]
-  W --> IG[Insta Worker]
+  W --> SC[Bundled SoundCloud routes /svc/sc]
+  W --> SHZ[Bundled Shazam routes /svc/shz]
+  W --> IG[Bundled Instagram routes /svc/ig]
   W --> LR[LRCLIB]
-  W -- "/dl/<signed>" proxy --> TG
+  W -- direct URL-send --> TG
   Cron[Cron */5min] --> W
 ```
 
-* `src/index.js` — router, webhook verify, `/setup` `/health` `/dl/`, cron
-* `src/telegram.js` — Bot API client (429/403 handling, multipart upload)
-* `src/handlers/*` — message, callback, search, recognize, insta, inline, admin, gate
-* `src/services/*` — typed adapters → one `Track` shape
-* `src/utils/*` — esc/normalize/fuzzy, HMAC, http retry, KV store, audio
-* `src/i18n/index.js` — all user-facing strings (fa/en)
+The repository contains the bot **and the three service workers** in one deploy:
 
-**Data model** — one KV key per entity (`u:<id>`, `chat:<id>`, `admin:<id>`,
-`ch:<id>`, `cfg:<name>`, `track:<src>:<id>`, `srch:<id>` TTL, `fav:<uid>`,
-`stat:<yyyymmdd>:<metric>`, `job:<id>`). Scales to millions — *no* giant JSON
-array. Counters are approximate (KV isn't atomic); swap to D1 later if needed —
-all access is isolated in `src/utils/kv.js`.
+- `src/index.js` — bot router + `/svc/*` bundled-service router
+- `src/services/workers/soundcloud.js` — SoundCloud search/HLS/remux/direct-file service
+- `src/services/workers/shazam.js` — Shazam recognition/search/lyrics service
+- `src/services/workers/insta.js` + `src/services/workers/lib/` — Instagram resolver/download service
+- `src/handlers/*` — message, callback, search, recognize, insta, inline, admin, gate
+- `src/services/*` — bot adapters; when `*_API_URL` is empty they self-route to the bundled `/svc/*` routes
+- `src/utils/*` — escaping, HTTP retry, KV store, crypto
+
+Audio delivery is URL-only: the bot passes `/svc/sc/f/<sid>/...mp3` to Telegram;
+the Worker does not download, buffer, or store music bytes. Telegram fetches the
+validated progressive file directly.
 
 ---
 
@@ -74,10 +75,11 @@ Repo → **Actions → deploy → Run workflow**, fill the fields and hit **Run*
 | `activate` | tick to register the webhook → bot goes live on Cloudflare (replaces the cPanel webhook) |
 
 The action validates the fields, runs tests, provisions the KV namespace, uploads
-the secrets to the worker, deploys, and — only when `activate` is ticked —
-registers the webhook + verifies it. Values you type are **not** stored in the
-repo. To avoid retyping every run, save the same names as repository secrets and
-any field left blank falls back to that secret.
+the secrets, deploys the single Worker containing the bot + SoundCloud + Shazam
++ Instagram services, and — only when `activate` is ticked — registers the
+webhook + verifies it. Values you type are **not** stored in the repo. To avoid
+retyping every run, save the same names as repository secrets and any field left
+blank falls back to that secret.
 
 - `activate = false` → Worker deployed + health-checked; webhook untouched.
 - `activate = true` → Worker deployed + `/setup` runs → webhook moved to Cloudflare (final cutover from cPanel).
@@ -124,10 +126,8 @@ Never commit it.
 | `LINK_SECRET` | secret | HMAC-sign `/dl/` proxy URLs |
 | `ADMIN_SETUP_KEY` | secret | guard `/setup` |
 | `OWNER_ID` | var | owner numeric id (`8437014959`) |
-| `SOUNDCLOUD_API_URL` | var | SoundCloud worker base |
-| `SHAZAM_API_URL` | var | Shazam worker base |
-| `INSTA_API_URL` | var | insta-worker base |
-| `LEGACY_INSTA_API_URL` | var | fallback (`catplus.ir/api/insta`) |
+| `SOUNDCLOUD_API_URL` / `SHAZAM_API_URL` / `INSTA_API_URL` | var (optional) | Leave empty for the bundled in-worker services; set only to override with external workers |
+| `LEGACY_INSTA_API_URL` | var (optional) | Optional legacy Instagram fallback; empty uses bundled Instagram routes |
 | `LRCLIB_API_URL` | var | `https://lrclib.net` |
 | `SHAZAM_BACKEND_URL` / `_KEY` | secret (opt) | ffmpeg backend for OGG/video recognition |
 | `TELEGRAM_API_BASE` | var (opt) | override for e2e tests |

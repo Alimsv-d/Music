@@ -141,7 +141,7 @@ export async function deliverTrack(ctx, msg, trackStub, lang, editCb) {
   // if all fail, reply with a direct-link button. Never buffer bytes here.
   if (!sent) {
     const sid0 = String(tr.sid || tr.id || "").replace(/^sc_/, "");
-    const base = (ctx.env.SOUNDCLOUD_API_URL || "").replace(/\/$/, "");
+    const base = (ctx.env.SOUNDCLOUD_API_URL || `${ctx.publicUrl(ctx.request)}/svc/sc`).replace(/\/$/, "");
     const slug = encodeURIComponent(((artist ? artist + " - " : "") + title).replace(/[\\/:*?"<>|]/g, " ").slice(0, 80) || "track");
     const urls = [
       sid0 && base ? `${base}/f/${sid0}/${slug}.mp3` : null,

@@ -18,14 +18,47 @@ import { setupWebhook, runBroadcastChunk } from "./handlers/admin.js";
 import { COMMANDS } from "./handlers/commands.js";
 import { t } from "./i18n/index.js";
 
+// Bundled web services — the SoundCloud, Shazam and Instagram resolvers run
+// inside THIS worker under a prefix, so the whole stack deploys as ONE
+// codebase + ONE worker (no separate service URLs). The bot's service clients
+// reach them via the same-origin URLs configured in wrangler.jsonc.
+import scWorker from "./services/workers/soundcloud.js";
+import shzWorker from "./services/workers/shazam.js";
+import igWorker from "./services/workers/insta.js";
+
 export default {
   async fetch(request, env, exec) {
     const url = new URL(request.url);
     const path = url.pathname;
     const ctx = new Ctx(env, exec);
     ctx.request = request;
+    ctx.bindOrigin(request);
 
     try {
+      // ── bundled service routing (delegated by path prefix) ────────────────
+      // /svc/sc/<rest>  -> SoundCloud worker (search/track/stream/download/f/…)
+      // /svc/shz/<rest> -> Shazam worker (health/search/lyrics/recognize)
+      // /svc/ig/<rest>  -> Instagram worker (resolve/download/health)
+      for (const [prefix, worker] of [["/svc/sc", scWorker], ["/svc/shz", shzWorker], ["/svc/ig", igWorker]]) {
+        if (path === prefix || path.startsWith(prefix + "/")) {
+          const rewritten = new URL(request.url);
+          rewritten.pathname = path === prefix ? "/" : path.slice(prefix.length);
+          const fwd = new Request(rewritten.toString(), request);
+          // Share the bot's KV binding with bundled services under the names
+          // their standalone workers expect. No extra service URL/binding is
+          // required when the stack is deployed as one Worker.
+          const serviceEnv = {
+            ...env,
+            CACHE_KV: env.KV,
+            CACHE: env.KV,
+            BACKEND_URL: env.SHAZAM_BACKEND_URL,
+            BACKEND_KEY: env.SHAZAM_BACKEND_KEY,
+            PUBLIC_URL: env.PUBLIC_URL || url.origin,
+          };
+          return worker.fetch(fwd, serviceEnv, exec);
+        }
+      }
+
       if (path === "/" || path === "") return statusPage(request, env);
       if (path === "/health") return healthCheck(ctx);
       if (path === "/setup") return setupRoute(request, env, ctx, url);
