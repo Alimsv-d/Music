@@ -666,17 +666,18 @@ bot.on('callback_query', async (ctx) => {
       return ctx.api.sendDocument(ctx.chat.id, new InputFile(Buffer.from(csv), 'referrals.csv'));
     }
     if (data.startsWith('refok:')) {
-      const inv = data.slice(6);
-      const u = store.get('users', inv) || {};
-      u.ref_status = 'verified'; store.set('users', inv, u);
-      require('./services/referral').revoke && null;
+      const invitee = data.slice(6);
+      const u = store.get('users', invitee) || {};
+      u.ref_status = 'verified'; store.set('users', invitee, u);
+      for (const [k, e] of store.all('referral')) if (e.invitee === invitee && e.status === 'held') { e.status = 'verified'; e.reason = 'owner_approved'; store.set('referral', k, e); }
       await answer('تأیید شد');
       return panel.show(ctx, 'admin_refs', {}, { push: false });
     }
     if (data.startsWith('refx:')) {
-      const inv = data.slice(5);
-      const u = store.get('users', inv) || {};
-      u.ref_status = 'rejected'; store.set('users', inv, u);
+      const invitee = data.slice(5);
+      const u = store.get('users', invitee) || {};
+      u.ref_status = 'rejected'; u.referred_by = null; store.set('users', invitee, u);
+      for (const [k, e] of store.all('referral')) if (e.invitee === invitee && (e.status === 'held' || e.status === 'pending')) { e.status = 'rejected'; e.reason = 'owner_rejected'; store.set('referral', k, e); }
       await answer('رد شد');
       return panel.show(ctx, 'admin_refs', {}, { push: false });
     }

@@ -70,3 +70,7 @@ Two distinct codebases exist and MUST NOT be force-merged:
 - /start in groups now shows the help card (was a silent no-op). Root cause of
   "group doesn't answer": command early-return + a stale negcache entry.
 - webhook allowed_updates now include edited_message + chosen_inline_result.
+- Referral admin actions (refok/refx) resolve the held event record AND set the
+  user's ref_status, so points tally from events alone.
+- npm test is serialized (--test-concurrency=1): the singleton sqlite store is
+  per-process and parallel test files could contend on the same data dir.
