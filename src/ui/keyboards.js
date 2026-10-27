@@ -6,18 +6,23 @@ import { t, langName } from "../i18n/index.js";
 import { fmtDuration } from "../utils/text.js";
 
 export const kb = (rows) => ({ inline_keyboard: rows });
-export const btn = (text, callback_data) => ({ text, callback_data });
-export const urlBtn = (text, url) => ({ text, url });
-export const inlineBtn = (text, query) => ({ text, switch_inline_query: query });
-export const inlineCurrentBtn = (text, query) => ({ text, switch_inline_query_current_chat: query });
 
-/** Main /start menu. */
+// Telegram button styles used by the cPanel version. Keep semantic helpers so
+// every screen uses the same visual language as the tested host deployment.
+export const btn = (text, callback_data, style = "primary") => ({ text, callback_data, style });
+export const G = (text, callback_data) => btn(text, callback_data, "success");
+export const B = (text, callback_data) => btn(text, callback_data, "primary");
+export const R = (text, callback_data) => btn(text, callback_data, "danger");
+export const urlBtn = (text, url, style = "primary") => ({ text, url, style });
+export const inlineBtn = (text, query, style = "primary") => ({ text, switch_inline_query: query, style });
+export const inlineCurrentBtn = (text, query, style = "primary") => ({ text, switch_inline_query_current_chat: query, style });
+
+/** Main /start menu — matches the cPanel/grammy deployment. */
 export function mainMenu(lang, bot) {
   return kb([
-    [btn(t(lang, "btn_search"), "m:search"), btn(t(lang, "btn_recognize"), "m:recog")],
-    [btn(t(lang, "btn_insta"), "m:insta"), btn(t(lang, "btn_fav"), "m:fav:1")],
-    [btn(t(lang, "btn_help"), "m:help"), btn(t(lang, "btn_lang"), "m:lang")],
-    [btn(t(lang, "btn_creator"), "m:creator"), inlineBtn("🔎 Inline", "")],
+    [urlBtn(t(lang, "menu_addgroup"), `https://t.me/${bot || "SearcherMusiic_Bot"}?startgroup=true&admin=delete_messages+pin_messages`, "success")],
+    [urlBtn(t(lang, "menu_channel"), "https://t.me/MusicMsvD"), B(t(lang, "menu_lang"), "m:lang")],
+    [B("👥 دعوت دوستان", "m:invite"), B(t(lang, "menu_help"), "m:help"), B(t(lang, "menu_support"), "m:support")],
   ]);
 }
 

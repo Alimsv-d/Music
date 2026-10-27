@@ -57,13 +57,22 @@ export async function handleCallback(ctx, cq) {
     }
     if (data === "m:help") {
       await answer();
-      return editOrSend(ctx, chatId, msgId, t(lang, "help_text", { bot: ctx.env.BOT_USERNAME }), kb([[btn(t(lang, "back"), "m:home")]]));
+      return editOrSend(ctx, chatId, msgId, t(lang, "help_text", { bot: ctx.env.BOT_USERNAME }), kb([[B(t(lang, "menu_support"), "m:support"), btn(t(lang, "back"), "m:home")]]));
     }
     if (data === "m:creator" || data === "m:about") {
       await answer();
       return editOrSend(ctx, chatId, msgId,
         t(lang, "about_text", { name: ctx.env.BOT_NAME, dev: ctx.env.OWNER_USERNAME, version: ctx.env.VERSION || "1.0.0" }),
         kb([[btn(t(lang, "back"), "m:home")]]));
+    }
+    if (data === "m:support") {
+      await answer();
+      return editOrSend(ctx, chatId, msgId, t(lang, "support_text", { dev: ctx.env.OWNER_USERNAME }), kb([[btn(t(lang, "back"), "m:home")]]));
+    }
+    if (data === "m:invite") {
+      await answer();
+      const link = `https://t.me/${ctx.env.BOT_USERNAME || "SearcherMusiic_Bot"}?start=ref_${userId}`;
+      return editOrSend(ctx, chatId, msgId, t(lang, "invite_title", { bot: ctx.env.BOT_USERNAME || "SearcherMusiic_Bot", id: userId }) + `\n\n<a href="${link}">${t(lang, "invite_share")}</a>`, kb([[btn(t(lang, "back"), "m:home")]]));
     }
     if (data === "m:lang") {
       await answer();
