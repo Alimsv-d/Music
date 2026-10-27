@@ -84,7 +84,7 @@ jobs:
           set -e
           for s in BOT_TOKEN WEBHOOK_SECRET CRON_SECRET OWNER_ID SOUNDCLOUD_API_URL SHAZAM_API_URL INSTA_API_URL HEAVY_AUDIO_URL; do
             val="${!s}"
-            if [ -n "$val" ]; then printf '%s' "$val" | wrangler secret put "$s" --name music-bot; fi
+            if [ -n "$val" ]; then printf '%s' "$val" | wrangler secret put "$s" --name music-telegrambot; fi
           done
 
       - name: Deploy
@@ -95,8 +95,8 @@ jobs:
       - name: Determine Worker URL
         id: wurl
         run: |
-          WURL=$(wrangler deployments list --name music-bot --json 2>/dev/null | jq -r '.[0].url // empty')
-          if [ -z "$WURL" ]; then WURL="https://music-bot.${{ secrets.CF_SUBDOMAIN || 'workers.dev' }}"; fi
+          WURL=$(wrangler deployments list --name music-telegrambot --json 2>/dev/null | jq -r '.[0].url // empty')
+          if [ -z "$WURL" ]; then WURL="https://music-telegrambot.${{ secrets.CF_SUBDOMAIN || 'workers.dev' }}"; fi
           echo "WURL=$WURL" >> "$GITHUB_OUTPUT"
 
       - name: Set Telegram webhook (optional)
