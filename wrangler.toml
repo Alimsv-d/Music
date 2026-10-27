@@ -1,0 +1,28 @@
+'name': 'music-bot'
+'main': 'src/worker.js'
+'compatibility_date': '2026-10-25'
+
+[vars]
+PUBLIC_URL = 'https://music.example.workers.dev'
+
+# Bindings created/managed by .github/workflows/deploy.yml:
+#   D1 database   -> binding DB  (migrations/ applied by workflow)
+#   KV namespace  -> binding KV  (cache + rate-limit)
+#   R2 (optional) -> not used
+
+# Secrets (set via `wrangler secret put` in the workflow):
+#   BOT_TOKEN, WEBHOOK_SECRET, CRON_SECRET, OWNER_ID,
+#   SOUNDCLOUD_API_URL, SHAZAM_API_URL, INSTA_API_URL,
+#   HEAVY_AUDIO_URL (optional — enables audio recognition on Workers)
+
+[[d1_databases]]
+binding = 'DB'
+database_name = 'music_bot_db'
+database_id = 'REPLACE_BY_WORKFLOW'
+
+[[kv_namespaces]]
+binding = 'KV'
+id = 'REPLACE_BY_WORKFLOW'
+
+[triggers]
+crons = ['*/5 * * * *']

@@ -1,183 +1,101 @@
-# 🎧 Music — Telegram Music Bot on Cloudflare Workers
+# Music — Telegram music bot
 
-> An always-on Telegram bot that **searches, recognizes, and downloads music**.
-> Built on Cloudflare Workers + KV, backed by the owner's SoundCloud / Shazam /
-> Instagram / LRCLIB services. Persian-first UI with an English option.
->
-> **Creator: Ali Mousavi — [@AliMsvD](https://t.me/AliMsvD)**
+ربات تلگرام موزیک «Music» — سریع، امن و چندزبانه. کلاینتِ سه وب‌سرویس Cloudflare (ساندکلود، شناسایی، اینستاگرام).
 
----
+## امکانات
+- جستجو و دانلود آهنگ از ساندکلود (فارسی/لاتین/فینگلیش، نرمال‌سازی کوئری)
+- شناسایی آهنگ از ویس/صدا/ویدیو (اثر انگشت صوتی سمت کلاینت، در worker thread)
+- دانلود رسانه‌ی عمومی اینستاگرام (عکس، ویدیو، کاروسل)
+- پنل edit-in-place، صفحه‌بندی، کاور، متن ترانه، آهنگ‌های مشابه
+- علاقه‌مندی‌ها و تاریخچه
+- رفتار هوشمند در گروه (پاسخ فقط هنگام نیاز)
+- ضد اسپم و نرخ‌دهی تدریجی، پنل مالک، کانال خبری با صف انتشار
+- چندزبانه: fa, en, ar, ru, zh + tier-2 (tr, az, ckb, ps, ur, hi, id, es, fr, de, pt)
 
-## ✨ Features
+## اجرا روی هاست (cPanel Node)
+1. متغیرها را از `.env.example` در `.env` کپی و پر کنید (`.env` با دسترسی 600).
+2. `npm install`
+3. اپ را از طریق cPanel اجرا کنید؛ فایل شروع `app.js` است. برای ری‌استارت: `touch tmp/restart.txt`.
+4. وب‌هوک: `npm run set-webhook` — به `PUBLIC_URL` + مسیر امن اشاره می‌کند.
+5. برای تست محلی بدون وب‌هوک: `npm run dev` (long polling).
 
-| Area | What it does |
-|---|---|
-| 🔎 Smart search | Artist → top tracks; `Artist – Title` → direct delivery; ambiguous → paginated list (10/page) |
-| ⬇️ Delivery | `sendAudio` upload w/ caption + artwork, **file_id cached in KV** → instant resend, auto-lyrics |
-| ♾ Inline mode | `@bot <query>` in any chat → audio results via signed `/dl/` proxy |
-| 🎙 Recognition | voice / audio / video → Shazam; lyrics-snippet → song |
-| 📲 Instagram | reel/post → media + background music recognition button |
-| 👪 Groups | `/music`, `/find` reply, `/settings`, forced-join aware |
-| 👑 Panel | stats, forced-join, broadcast, ban, settings, webhook tools, CSV export, self-test |
-| 🌐 i18n | Persian (default) + English, RTL-friendly |
+### وب‌سرویس‌ها
+آدرس‌ها را در `.env` تنظیم کنید. فرمت دقیق در `docs/API_NOTES.md`.
 
----
+### کرون
+کارهای زمان‌بندی‌شده از مسیر `GET /cron/<CRON_SECRET>` اجرا می‌شوند. یک cron job در cPanel هر ۵ دقیقه این مسیر را صدا بزند، یا از تایمر داخلی اپ (هر ۵ دقیقه) به‌عنوان جایگزین استفاده می‌شود.
 
-## 🏗 Architecture
-
-```mermaid
-flowchart LR
-  TG[Telegram] -- webhook + secret --> W[ONE Cloudflare Worker]
-  W --> KV[(Cloudflare KV)]
-  W --> SC[Bundled SoundCloud routes /svc/sc]
-  W --> SHZ[Bundled Shazam routes /svc/shz]
-  W --> IG[Bundled Instagram routes /svc/ig]
-  W --> LR[LRCLIB]
-  W -- direct URL-send --> TG
-  Cron[Cron */5min] --> W
+```
+*/5 * * * * curl -sS -o /dev/null 'https://DevCoder.ir/cron/<CRON_SECRET>'
 ```
 
-The repository contains the bot **and the three service workers** in one deploy:
+## دیپلوی به Cloudflare Workers
+یک adapter در `src/worker.js` قرار دارد. دیپلوی از طریق workflow دستی `Deploy to Cloudflare Workers` (دکمه‌ی Run workflow) انجام می‌شود و کاملاً خودکار است: تست، ساخت/اتصال D1 و KV، migration، secrets، deploy و تنظیم وب‌هوک.
 
-- `src/index.js` — bot router + `/svc/*` bundled-service router
-- `src/services/workers/soundcloud.js` — SoundCloud search/HLS/remux/direct-file service
-- `src/services/workers/shazam.js` — Shazam recognition/search/lyrics service
-- `src/services/workers/insta.js` + `src/services/workers/lib/` — Instagram resolver/download service
-- `src/handlers/*` — message, callback, search, recognize, insta, inline, admin, gate
-- `src/services/*` — bot adapters; when `*_API_URL` is empty they self-route to the bundled `/svc/*` routes
-- `src/utils/*` — escaping, HTTP retry, KV store, crypto
+سکرت‌های موردنیاز گیتهاب: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` و متغیرهای ربات (`BOT_TOKEN`, `WEBHOOK_SECRET`, `CRON_SECRET`, `OWNER_ID`, `SOUNDCLOUD_API_URL`, `SHAZAM_API_URL`, `INSTA_API_URL`, `HEAVY_AUDIO_URL` اختیاری).
 
-Audio delivery is URL-only: the bot passes `/svc/sc/f/<sid>/...mp3` to Telegram;
-the Worker does not download, buffer, or store music bytes. Telegram fetches the
-validated progressive file directly.
+توکن کلودفلر به این دسترسی‌ها نیاز دارد: **Workers Scripts: Edit, D1: Edit, Workers KV Storage: Edit, Account Settings: Read**.
 
----
+### محدودیت Workers (پلن رایگان)
+شناسایی صوتی به‌خاطر محدودیت CPU روی پلن رایگان کار نمی‌کند؛ فقط اگر `HEAVY_AUDIO_URL` (endpoint امن اپ Node) تنظیم شود فعال می‌شود.
 
-## 🚀 استقرار روی Cloudflare با یک کلیک
+> توجه: فقط یک webhook در هر لحظه فعال است. دیپلوی Worker با `set_webhook=true` وب‌هوک هاست را جایگزین می‌کند. برای برگشت به هاست: `npm run set-webhook` را روی هاست اجرا کنید.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Alimsv-d/Music)
+## تست
+`npm test` — تست‌های واحد و یکپارچه (نرمال‌سازی، کش، اثر انگشت، i18n parity، قالب پست کانال، ضد اسپم).
 
-با فشردن دکمه، Cloudflare یک کپی از مخزن در حساب کاربر می‌سازد، Worker و KV را به‌صورت خودکار راه‌اندازی و Deploy می‌کند. **فقط `BOT_TOKEN` و `OWNER_ID` لازم‌اند:**
-
-| فیلد | از کجا؟ |
-|---|---|
-| `BOT_TOKEN` | توکن ربات از [@BotFather](https://t.me/BotFather) — **اجباری** |
-| `OWNER_ID` | آیدی عددی پیش‌فرض سازنده (`8437014959`)؛ کاربر برای مالکیت ربات خودش آن را با آیدی خود جایگزین کند — **تنها مقدار متغیر اجباری** |
-
-نام سازنده و username پیش‌فرض **Ali Mousavi / @AliMsvD** هستند و کاربر در صورت نیاز می‌تواند آن‌ها را در تنظیمات Worker تغییر دهد؛ برای اجرای معمولی نیازی به تغییرشان نیست. آدرس عمومی SoundCloud، Shazam و Instagram، KV، کلیدهای امنیتی، webhook و پایگاه‌داده/ذخیره‌سازی مورد نیاز خودکار تنظیم می‌شوند. هیچ آدرس سرویس دیگری لازم نیست.
-
-> فیلدهای `WEBHOOK_SECRET`، `LINK_SECRET` و `ADMIN_SETUP_KEY` را **خالی بگذارید** — از `BOT_TOKEN` شما مشتق امن می‌شوند. کاربر باید در Cloudflare وارد شده و مجوز اتصال به GitHub را بدهد.
-
-**اگر Deploy Button را fork نمی‌خواهید:** می‌توانید مستقیم با Wrangler هم مستقر کنید (`npm run deploy`) و بعد فقط `/setup` را بدون کلید باز کنید — اولین بار فعال‌سازی انجام می‌شود و بعد قفل می‌شود.
-
-### استقرار از طریق GitHub Actions (جایگزین)
-
-Repo → **Actions → deploy → Run workflow**. جزییات ورودی‌ها در `.github/workflows/deploy.yml`.
-
-### 4 — BotFather checklist (one-time, required)
+## ساختار
 ```
-/setinline            -> enable inline mode
-/setinlinefeedback    -> enable (for stats)
-/setprivacy           -> Disable   (so /music works in groups)
-/setjoingroups        -> Enable
-```
-Then send `/start` to your bot. Done.
-
----
-
-## 🖥 Manual / local deploy (cPanel host or Termux)
-
-```bash
-# clone from the public repository:
-git clone https://github.com/Alimsv-d/Music.git
-
-cd Music
-./scripts/bootstrap.sh          # checks node, installs, .dev.vars, tests, gh secrets
-# then either:
-npm run deploy                  # wrangler login + creates KV + deploys
-curl "<worker>/setup"           # first call activates webhook (locks afterwards)
+src/
+  config.js          تنظیمات و .env
+  index.js           سرور HTTP، webhook، کرون، روتر callback
+  worker.js          نسخه‌ی Cloudflare
+  core/              store، http، cache، ratelimit، log، context
+  services/          soundcloud، shazam(+fingerprint)، instagram، query
+  bot/               panel، handlers، admin، channel، send، audio، keyboard
+  i18n/              موتور + فایل‌های زبان
+migrations/          D1 schema
+docs/                API_NOTES، DECISIONS
 ```
 
-`bootstrap.sh` also sets GitHub secrets for you if `gh` is authenticated.
-
-### `.dev.vars` (local secrets — gitignored)
-Copy `.dev.vars.example`, fill `BOT_TOKEN` — the other secrets are optional
-(auto-derived from `BOT_TOKEN`). Never commit it.
-
 ---
 
-## ⚙️ Env / secrets table
+# English
 
-| Name | Kind | Purpose |
-|---|---|---|
-| `BOT_TOKEN` | secret | Telegram token — **the only required secret** |
-| `OWNER_ID` | var | owner numeric id — default is the author; replace it only when deploying for another owner |
-| `OWNER_USERNAME` / `CREATOR_NAME` | var | پیش‌فرض `AliMsvD` / `Ali Mousavi`؛ کاربر نیازی به تغییر آن‌ها ندارد |
-| `WEBHOOK_SECRET` | secret (opt) | auto-derived when empty |
-| `LINK_SECRET` | secret (opt) | HMAC-sign `/dl/` proxy URLs — auto-derived when empty |
-| `ADMIN_SETUP_KEY` | secret (opt) | guard `/setup` re-run — auto-derived when empty |
-| `SOUNDCLOUD_API_URL` / `SHAZAM_API_URL` / `INSTA_API_URL` | var | آدرس‌های عمومی آماده به‌صورت پیش‌فرض تنظیم شده‌اند؛ کاربر نیازی به تغییر آن‌ها ندارد |
-| `LRCLIB_API_URL` | var | `https://lrclib.net` |
-| `SHAZAM_BACKEND_URL` / `_KEY` | secret (opt) | ffmpeg backend for OGG/video recognition |
-| `TELEGRAM_API_BASE` | var (opt) | override for e2e tests |
-| `PUBLIC_URL` | var (opt) | worker public origin for webhook/links |
+**Music** — a fast, secure, multilingual Telegram music bot. It is only an HTTP client of three Cloudflare services (SoundCloud, recognition, Instagram); no scraping or music detection lives in the bot.
 
----
+## Features
+- SoundCloud search & download (Persian/Latin/Finglish, query normalization)
+- Song recognition from voice/audio/video (client-side fingerprint in a worker thread)
+- Public Instagram media download (photo, video, carousel)
+- Edit-in-place panel UI, pagination, covers, lyrics, similar tracks
+- Favorites & history
+- Smart group behavior (replies only when needed)
+- Anti-spam, graduated rate limiting, owner panel, news channel with publish queue
+- Multilingual: fa, en, ar, ru, zh + tier-2 locales
 
-## 👑 Admin guide
+## Run on the host (cPanel Node)
+1. Copy `.env.example` to `.env` and fill it (chmod 600).
+2. `npm install`
+3. Start the app via cPanel; startup file is `app.js`. Restart: `touch tmp/restart.txt`.
+4. Webhook: `npm run set-webhook`.
+5. Local testing without webhook: `npm run dev` (long polling).
 
-`/panel` (private, owner/admin). Owner-only: admins, settings, tools.
-- **Stats** — users/DAU, groups, searches/downloads, cache hit %, API health.
-- **Forced join** — add `@chan` / `t.me/…` / `-100…` or invite link; per-channel
-  toggle; global toggle in KV; `✅ عضو شدم` re-check; **fail-open** on TG errors.
-- **Broadcast** — send text/media/forward → pick target → chunked ~25 msg/s via
-  cron + `waitUntil`; honors `retry_after`, marks blocked inactive, live report.
-- **Ban** — by id / reply / forward; reason; list.
-- **Settings** — maintenance, auto-lyrics, inline, page size, rate, lang,
-  welcome text, support button — all live in KV.
-- **Tools** — webhook set/info/delete, self-test, clear cache, CSV export, errors.
+### Cron
+Scheduled tasks run at `GET /cron/<CRON_SECRET>`. Add a cPanel cron every 5 minutes, or rely on the app's internal 5-minute timer.
 
----
+## Cloudflare Workers deploy
+`src/worker.js` is the Worker adapter. The manual workflow **Deploy to Cloudflare Workers** runs tests, creates/binds D1 & KV, applies migrations, sets secrets, deploys and (optionally) sets the webhook.
 
-## 🧪 Testing
+Required GitHub secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, plus bot vars. Token scopes: Workers Scripts Edit, D1 Edit, Workers KV Storage Edit, Account Settings Read.
 
-```bash
-npm test               # 49 unit tests
-node scripts/e2e.mjs   # worker-level e2e (mock TG + real SC backend)
-node scripts/live-check.mjs   # live backend latency check
-node scripts/lint.mjs         # syntax + import resolution
-node scripts/secret-scan.mjs  # before every push
-```
+### Worker limitation (free plan)
+Audio recognition is disabled unless `HEAVY_AUDIO_URL` (a secret-protected endpoint on the Node app) is set, because the free plan's CPU budget is too small for fingerprinting.
 
-> **Host note:** this cPanel host caps OS threads, so `wrangler dev`/`workerd`
-> cannot run locally. The e2e harness runs the *real* worker code (`src/index.js`)
-> directly against a stubbed Telegram + live SoundCloud — it needs no workerd.
+> Only one webhook is active at a time. Deploying with `set_webhook=true` replaces the host webhook. To switch back, run `npm run set-webhook` on the host.
 
-## ⚠️ Known limits
-- Telegram upload **50 MB**, `getFile` **20 MB**; large files → direct-link button.
-- SoundCloud serves **m4a (audio/mp4)** — delivered as `.m4a` audio.
-- OGG-Opus voice/video needs an ffmpeg backend (`SHAZAM_BACKEND_URL`) to
-  fingerprint; without it the bot replies "send a clearer clip" (fail-soft).
-- Free-plan Worker: 128 MB RAM, ~50 subrequests, 10 ms CPU — the code streams
-  audio and batches broadcast to stay inside it.
+## Tests
+`npm test` — unit & integration tests (normalization, cache, fingerprint, i18n parity, channel post format, anti-spam).
 
-## 🔧 Troubleshooting
-| Symptom | Fix |
-|---|---|
-| Bot silent | `curl <worker>/health` → check `webhook.error`; re-run `/setup?key=` |
-| 403 on webhook | `WEBHOOK_SECRET` must match `setWebhook` `secret_token` (Action does this) |
-| Inline empty | `/setinline` + `/setprivacy Disable` in @BotFather |
-| Voice not recognized | set `SHAZAM_BACKEND_URL` (ffmpeg) — see Known limits |
-| Group ignores /music | `/setprivacy Disable`, re-add bot, check `/settings` enabled |
-
-## ❓ FAQ
-- **چرا GitHub Actions؟** این روش جایگزین دکمه Deploy است و برای deployهای تکراری یا کنترل‌شده کاربرد دارد؛ برای شروع سریع از دکمه نارنجی بالا استفاده کنید.
-- **آیا کاربر می‌تواند خودش میزبانی کند؟** بله؛ باید حساب Cloudflare، توکن ربات تلگرام و شناسه عددی مالک خودش را وارد کند.
-- **آمار دقیق است؟** تقریبی است (KV). برای دقت کامل می‌توان D1 را جایگزین کرد.
-
----
-
-<div align="center">
-Made with ❤️ by <b>Ali Mousavi</b> — <a href="https://t.me/AliMsvD">@AliMsvD</a><br>
-Running on Cloudflare Workers · MIT License
-</div>
+## Author
+Ali Mousavi — [@AliMsvD](https://t.me/AliMsvD)

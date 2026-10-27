@@ -1,12 +1,16 @@
-.dev.vars
-.wrangler
-node_modules
-*.log
-.DS_Store
-/tmp
-cleanup
-.cleanup_trash
-package-lock.json.tmp
-
+# Runtime
 .env
+.env.*
+!.env.example
+node_modules/
 data/
+tmp/*
+!tmp/.keep
+*.log
+coverage/
+.DS_Store
+!tmp/.keep
+tools/e2e/
+.env.e2e
+# Never track local E2E credentials/session artifacts under any filename.
+**/e2e.session

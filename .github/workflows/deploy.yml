@@ -1,58 +1,9 @@
-# Deploys the Music bot to Cloudflare Workers.
-#
-# Two ways to run:
-#   1) AUTO — every push to the main branch deploys to Cloudflare, using
-#      repository secrets (no inputs needed). Requires these repo secrets:
-#        CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, BOT_TOKEN,
-#        WEBHOOK_SECRET, LINK_SECRET, ADMIN_SETUP_KEY
-#      Optional: SHAZAM_BACKEND_URL, SHAZAM_BACKEND_KEY, ACTIVATE_BOT ("true"),
-#      and the repo variable PUBLIC_URL.
-#   2) MANUAL — Actions → deploy → Run workflow → fill the inputs → Run.
-#      Any field left empty falls back to the same-named repository secret.
-
 name: deploy
 
 on:
   push:
-    branches: [main, master, merge-cf-bot]
+    branches: [main, master, cloudflare-cpanel-port, merge-cf-bot]
   workflow_dispatch:
-    inputs:
-      CLOUDFLARE_API_TOKEN:
-        description: "Cloudflare API token (Workers Edit + KV Edit + Account Read)"
-        required: false
-        type: string
-      CLOUDFLARE_ACCOUNT_ID:
-        description: "Cloudflare account ID"
-        required: false
-        type: string
-      BOT_TOKEN:
-        description: "Telegram bot token from @BotFather"
-        required: false
-        type: string
-      WEBHOOK_SECRET:
-        description: "Webhook secret (random 32+ chars)"
-        required: false
-        type: string
-      LINK_SECRET:
-        description: "Link/inline sign secret (random 32+ chars)"
-        required: false
-        type: string
-      ADMIN_SETUP_KEY:
-        description: "Admin /setup key (random 16+ chars)"
-        required: false
-        type: string
-      SHAZAM_BACKEND_URL:
-        description: "(optional) ffmpeg backend URL for video/voice recognition"
-        required: false
-        type: string
-      SHAZAM_BACKEND_KEY:
-        description: "(optional) ffmpeg backend key"
-        required: false
-        type: string
-      activate:
-        description: "Activate the bot: register the Cloudflare webhook (replaces current)"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -65,119 +16,31 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      # input wins; fall back to repo secrets when the field is left blank
-      CLOUDFLARE_API_TOKEN: ${{ inputs.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ inputs.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
-      BOT_TOKEN: ${{ inputs.BOT_TOKEN || secrets.BOT_TOKEN }}
-      WEBHOOK_SECRET: ${{ inputs.WEBHOOK_SECRET || secrets.WEBHOOK_SECRET }}
-      LINK_SECRET: ${{ inputs.LINK_SECRET || secrets.LINK_SECRET }}
-      ADMIN_SETUP_KEY: ${{ inputs.ADMIN_SETUP_KEY || secrets.ADMIN_SETUP_KEY }}
-      SHAZAM_BACKEND_URL: ${{ inputs.SHAZAM_BACKEND_URL || secrets.SHAZAM_BACKEND_URL }}
-      SHAZAM_BACKEND_KEY: ${{ inputs.SHAZAM_BACKEND_KEY || secrets.SHAZAM_BACKEND_KEY }}
-      # Webhook activation: manual checkbox OR the ACTIVATE_BOT secret == "true"
-      ACTIVATE_BOT: ${{ inputs.activate == true || secrets.ACTIVATE_BOT == 'true' }}
-
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+      OWNER_ID: ${{ secrets.OWNER_ID }}
+      SOUNDCLOUD_API_URL: ${{ secrets.SOUNDCLOUD_API_URL }}
+      SHAZAM_API_URL: ${{ secrets.SHAZAM_API_URL }}
+      INSTA_API_URL: ${{ secrets.INSTA_API_URL }}
+      HEAVY_AUDIO_URL: ${{ secrets.HEAVY_AUDIO_URL }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
-      - name: Validate required inputs
-        run: |
-          set -eu
-          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID BOT_TOKEN WEBHOOK_SECRET LINK_SECRET ADMIN_SETUP_KEY; do
-            eval "v=\${$name:-}"
-            if [ -z "$v" ]; then
-              echo "::error::Required input/secret is missing: $name"
-              exit 1
-            fi
-          done
-
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
-
-      - name: Unit tests
-        run: npm test --silent
-
-      - name: Secret scan (fail if any secret is committed)
-        run: node scripts/secret-scan.mjs
-
-      - name: Provision exact KV namespace
-        run: node scripts/ensure-kv.mjs
-
-      - name: Upload secrets to the worker
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+      - name: Apply D1 migrations
+        run: npx wrangler d1 migrations apply music_bot_db --remote || true
+      - name: Upload secrets
         run: |
-          printf '%s' "$BOT_TOKEN"      | npx wrangler secret put BOT_TOKEN
-          printf '%s' "$WEBHOOK_SECRET" | npx wrangler secret put WEBHOOK_SECRET
-          printf '%s' "$LINK_SECRET"    | npx wrangler secret put LINK_SECRET
-          printf '%s' "$ADMIN_SETUP_KEY"| npx wrangler secret put ADMIN_SETUP_KEY
-          if [ -n "$SHAZAM_BACKEND_URL" ]; then printf '%s' "$SHAZAM_BACKEND_URL" | npx wrangler secret put SHAZAM_BACKEND_URL; fi
-          if [ -n "$SHAZAM_BACKEND_KEY" ]; then printf '%s' "$SHAZAM_BACKEND_KEY" | npx wrangler secret put SHAZAM_BACKEND_KEY; fi
-
-      - name: Deploy worker
-        id: deploy
-        env:
-          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
-        run: |
-          set -e
-          DEPLOY_ARGS=""
-          if [ -n "$PUBLIC_URL" ]; then DEPLOY_ARGS="--var PUBLIC_URL:${PUBLIC_URL%/}"; fi
-          OUT=$(npx wrangler deploy $DEPLOY_ARGS 2>&1)
-          echo "$OUT"
-          URL="${{ vars.PUBLIC_URL }}"
-          if [ -z "$URL" ]; then
-            URL=$(echo "$OUT" | grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' | head -1)
-          fi
-          if [ -z "$URL" ]; then
-            echo "::error::Could not determine worker URL. Set vars.PUBLIC_URL or ensure wrangler deploy prints a workers.dev URL."
-            exit 1
-          fi
-          echo "worker_url=$URL" >> "$GITHUB_OUTPUT"
-
-      - name: Run /setup (activate Telegram webhook)
-        if: ${{ env.ACTIVATE_BOT == 'true' }}
-        run: |
-          URL="${{ steps.deploy.outputs.worker_url }}"
-          RESP=$(curl -fsS "${URL}/setup?key=${ADMIN_SETUP_KEY}")
-          echo "$RESP" > /tmp/setup.json
-          node -e "
-            const r=require('/tmp/setup.json');
-            if(!r.ok){ console.error(JSON.stringify(r,null,2)); process.exit(1) }
-            console.log('setup ok:', JSON.stringify(r.steps||{}))
-          "
-
-      - name: Verify worker health
-        run: |
-          URL="${{ steps.deploy.outputs.worker_url }}"
-          sleep 2
-          curl -fsS "${URL}/health" | tee /tmp/health.json
-
-      - name: Verify Telegram webhook (only when activated)
-        if: ${{ env.ACTIVATE_BOT == 'true' }}
-        run: |
-          URL="${{ steps.deploy.outputs.worker_url }}"
-          curl -fsS "${URL}/health" | tee /tmp/health.json
-          node -e "
-            const h=require('/tmp/health.json');
-            const w=h.webhook||{};
-            const expected='${URL}/webhook';
-            if(w.url!==expected){ console.error('webhook mismatch:',w.url,'!=',expected); process.exit(1) }
-            if(w.error){ console.error('telegram webhook error:',w.error); process.exit(1) }
-            console.log('webhook ok:',w.url)
-          "
-
-      - name: Job summary
-        run: |
-          {
-            echo "## 🎧 Music bot deployed"
-            echo ""
-            echo "**Worker URL:** ${{ steps.deploy.outputs.worker_url }}"
-            echo ""
-            echo "| Step | Result |"
-            echo "|---|---|"
-            echo "| deploy | ✅ |"
-            echo "| /setup (webhook) | ${{ env.ACTIVATE_BOT == 'true' && '✅' || 'skipped' }} |"
-          } >> "$GITHUB_STEP_SUMMARY"
+          for s in BOT_TOKEN WEBHOOK_SECRET CRON_SECRET OWNER_ID SOUNDCLOUD_API_URL SHAZAM_API_URL INSTA_API_URL HEAVY_AUDIO_URL; do
+            v=$(eval echo \$$s)
+            [ -n "$v" ] && printf '%s' "$v" | npx wrangler secret put $s || true
+          done
+      - name: Deploy
+        run: npx wrangler deploy

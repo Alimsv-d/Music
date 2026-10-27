@@ -1,319 +1,1240 @@
-// Worker entry point. Webhook-only bot on Cloudflare Workers.
-//
-// Routes:
-//   GET  /            branded status page
-//   GET  /health      JSON API health check
-//   GET  /setup?key=  bootstrap webhook + commands (key = ADMIN_SETUP_KEY)
-//   POST /webhook     Telegram updates (verified by WEBHOOK_SECRET header)
-//   GET  /dl/<sig>    signed MP3 proxy for inline-mode audio (HTTP Range ok)
-//   cron              webhook watchdog + broadcast job processing
+'use strict';
+const { Bot, webhookCallback, InputFile } = require('grammy');
+const http = require('node:http');
+const config = require('./config');
+const log = require('./core/log');
+const rl = require('./core/ratelimit');
+const { store, i18n, userLang, setUserLang, setChatLang, chatSettings, setChatSettings, trackUser, isOwner, getPanel, setPanel } = require('./core/context');
+const { t, esc, iso } = i18n;
+const { kb, G, B, R, URLB } = require('./bot/keyboard');
+const panel = require('./bot/panel');
+const H = require('./bot/handlers');
+const channel = require('./bot/channel');
+require('./bot/admin');
+const sc = require('./services/soundcloud');
+const sh = require('./services/shazam');
+const ig = require('./services/instagram');
+const { normalize, isSoundCloudUrl, similarity } = require('./services/query');
+const perf = require('./core/perf');
+const { downloadAndSend } = require('./bot/send');
+const REF = require('./services/referral');
+const { cleanTrackMeta } = require('./services/trackMeta');
 
-import { Ctx } from "./ctx.js";
-import { verifyLink } from "./utils/crypto.js";
-import { timingSafeEqualStr } from "./utils/crypto.js";
-import { secret } from "./utils/secrets.js";
-import { handleMessage } from "./handlers/message.js";
-import { handleCallback } from "./handlers/callback.js";
-import { handleInlineQuery, handleChosenInline } from "./handlers/inline.js";
-import { setupWebhook, runBroadcastChunk } from "./handlers/admin.js";
-import { COMMANDS } from "./handlers/commands.js";
-import { t } from "./i18n/index.js";
+const bot = new Bot(config.botToken);
+const memberCache = new Map();
+const invalidGateAlertAt = new Map();
+const groupNoticeAt = new Map();
+let lastUpdateSeen = { at: 0, update_id: null, kind: 'none', chat_id: null };
+let lastDrop = { at: 0, code: 'none', update_id: null };
 
-// Bundled web services — the SoundCloud, Shazam and Instagram resolvers run
-// inside THIS worker under a prefix, so the whole stack deploys as ONE
-// codebase + ONE worker (no separate service URLs). The bot's service clients
-// reach them via the same-origin URLs configured in wrangler.jsonc.
-import scWorker from "./services/workers/soundcloud.js";
-import shzWorker from "./services/workers/shazam.js";
-import igWorker from "./services/workers/insta.js";
+function dropUpdate(ctx, code) {
+  lastDrop = { at: Date.now(), code, update_id: ctx.update && ctx.update.update_id };
+  log.info('update_dropped', { code, update_id: lastDrop.update_id, chat_id: ctx.chat && String(ctx.chat.id) });
+}
 
-export default {
-  async fetch(request, env, exec) {
-    const url = new URL(request.url);
-    const path = url.pathname;
-    const ctx = new Ctx(env, exec);
-    ctx.request = request;
-    ctx.bindOrigin(request);
+// Retry exactly once only for Telegram's explicit bad-request style rejection.
+bot.api.config.use((prev, method, payload, signal) => prev(method, payload, signal).catch(async (error) => {
+  const description = String(error && error.description || '');
+  if (!/\bstyle\b/i.test(description) || !/bad request/i.test(description)) throw error;
+  const retry = structuredClone(payload);
+  let removed = false;
+  const strip = (markup) => {
+    for (const row of (markup && markup.inline_keyboard) || []) for (const button of row) {
+      if (Object.prototype.hasOwnProperty.call(button, 'style')) { delete button.style; removed = true; }
+    }
+  };
+  strip(retry.reply_markup);
+  if (!removed) throw error;
+  log.warn('Telegram rejected button style; retrying once without style');
+  return prev(method, retry, signal);
+}));
 
+// ---------- context middleware: lang, user tracking, force-join ----------
+bot.use(async (ctx, next) => {
+  lastUpdateSeen = { at: Date.now(), update_id: ctx.update && ctx.update.update_id, kind: Object.keys(ctx.update || {}).find((k) => k !== 'update_id') || 'unknown', chat_id: ctx.chat && String(ctx.chat.id) };
+  if (ctx.from) trackUser(ctx.from, ctx.chat);
+  ctx.lang = ctx.from ? userLang(ctx.from.id, ctx.chat) : 'fa';
+  // maintenance
+  const s = store.get('settings', 'global') || {};
+  if (s.maintenance && !isOwner(ctx.from && ctx.from.id)) {
+    if (ctx.message) await ctx.reply(t(ctx.lang, 'maintenance'));
+    dropUpdate(ctx, 'maintenance');
+    return;
+  }
+  const membershipUpdate = !!(ctx.update && (ctx.update.chat_member || ctx.update.my_chat_member));
+  if (ctx.from && ctx.chat && ctx.chat.type !== 'channel' && !membershipUpdate && !(ctx.callbackQuery && ctx.callbackQuery.data === 'fj:check') && !(await checkForceJoin(ctx))) {
+    dropUpdate(ctx, 'forcejoin');
+    return;
+  }
+  return next();
+});
+
+function featureOn(name) {
+  const s = store.get('settings', 'features') || {};
+  return s[name] !== false;
+}
+
+// force-join check (multi-channel). Returns true if member of ALL required channels.
+async function checkForceJoin(ctx, options = {}) {
+  const s = store.get('settings', 'global') || {};
+  const fj = Array.isArray(s.forcejoin) ? s.forcejoin : (s.forcejoin ? [s.forcejoin] : []);
+  const testUntil = store.get('settings', 'gatetest:' + String(ctx.from && ctx.from.id)) || 0;
+  const testMode = testUntil > Date.now();
+  if (!fj.length || (isOwner(ctx.from.id) && !testMode)) return true;
+  const missing = [];
+  const uid = String(ctx.from.id);
+  for (const raw of fj) {
+    const gate = typeof raw === 'object' ? raw : { id: raw, type: 'chat', enabled: true };
+    if (gate.enabled === false) continue;
+    if (gate.type === 'bot_link') { missing.push({ gate, unverifiable: true }); continue; }
+    const key = `${String(gate.id)}:${uid}`;
+    const cached = !options.bypass && !options.simulate && memberCache.get(key);
+    if (cached && cached.until > Date.now()) { if (!cached.member) missing.push({ gate }); continue; }
     try {
-      // ── bundled service routing (delegated by path prefix) ────────────────
-      // /svc/sc/<rest>  -> SoundCloud worker (search/track/stream/download/f/…)
-      // /svc/shz/<rest> -> Shazam worker (health/search/lyrics/recognize)
-      // /svc/ig/<rest>  -> Instagram worker (resolve/download/health)
-      for (const [prefix, worker] of [["/svc/sc", scWorker], ["/svc/shz", shzWorker], ["/svc/ig", igWorker]]) {
-        if (path === prefix || path.startsWith(prefix + "/")) {
-          const rewritten = new URL(request.url);
-          rewritten.pathname = path === prefix ? "/" : path.slice(prefix.length);
-          const fwd = new Request(rewritten.toString(), request);
-          // Share the bot's KV binding with bundled services under the names
-          // their standalone workers expect. No extra service URL/binding is
-          // required when the stack is deployed as one Worker.
-          const serviceEnv = {
-            ...env,
-            CACHE_KV: env.KV,
-            CACHE: env.KV,
-            BACKEND_URL: env.SHAZAM_BACKEND_URL,
-            BACKEND_KEY: env.SHAZAM_BACKEND_KEY,
-            PUBLIC_URL: env.PUBLIC_URL || url.origin,
-          };
-          return worker.fetch(fwd, serviceEnv, exec);
-        }
-      }
-
-      // First-request auto-activation: after a Deploy-to-Cloudflare install the
-      // very first hit on the worker (or any user message) registers the webhook
-      // in the background — no manual /setup needed. Skipped while running
-      // locally (127.x) so `wrangler dev` never hijacks a live webhook.
-      if (env.BOT_TOKEN && !url.hostname.startsWith("127.") && url.hostname !== "localhost") {
-        exec.waitUntil(
-          (async () => {
-            try {
-              if (!(await ctx.store.getCfg("activated"))) {
-                await runSetup(request, env, ctx, url);
-              }
-            } catch {}
-          })()
-        );
-      }
-
-      if (path === "/" || path === "") return statusPage(request, env);
-      if (path === "/health") return healthCheck(ctx);
-      if (path === "/setup") return setupRoute(request, env, ctx, url);
-      if (path === "/webhook" && request.method === "POST") return webhook(request, env, exec, ctx);
-      if (path.startsWith("/dl/")) return dlProxy(ctx, path, request);
-      return new Response("not found", { status: 404 });
+      const m = (options.simulate || testMode) ? { status: 'left', is_member: false } : await ctx.api.getChatMember(gate.id, ctx.from.id);
+      const member = ['creator', 'administrator', 'member'].includes(m.status) || (m.status === 'restricted' && m.is_member === true);
+      memberCache.set(key, { member, until: Date.now() + (member ? 45000 : 5000) });
+      if (!member) missing.push({ gate });
     } catch (e) {
-      console.error("fetch error:", e?.message);
-      try { await ctx.store.logError({ where: "fetch", msg: e?.message }); } catch {}
-      return new Response("error", { status: 500 });
+      gate.invalid = true;
+      missing.push({ gate, invalid: true });
+      const throttle = String(gate.id), prior = invalidGateAlertAt.get(throttle) || 0;
+      if (Date.now() - prior > 3600000) {
+        invalidGateAlertAt.set(throttle, Date.now());
+        ctx.api.sendMessage(config.ownerId, `⚠️ بررسی gate عضویت ناموفق است: ${String(gate.id)}`).catch(() => {});
+      }
     }
-  },
-
-  async scheduled(event, env, exec) {
-    const ctx = new Ctx(env, exec);
-    exec.waitUntil(cronTick(ctx, event));
-  },
-};
-
-// ── webhook ───────────────────────────────────────────────────────────────────
-async function webhook(request, env, exec, ctx) {
-  // Verify Telegram's secret header.
-  const token = request.headers.get("x-telegram-bot-api-secret-token") || "";
-  const expected = await secret(env, "WEBHOOK_SECRET");
-  if (!expected || !timingSafeEqualStr(token, expected)) {
-    return new Response("forbidden", { status: 403 });
   }
-
-  let update;
-  try { update = await request.json(); } catch { return new Response("bad", { status: 400 }); }
-
-  // Acknowledge immediately; do the work in the background.
-  exec.waitUntil(processUpdate(ctx, update));
-  return new Response("ok");
+  if (!missing.length) return true;
+  if (testMode) {
+    const sent = await ctx.reply(t(ctx.lang, 'forcejoin_msg'), { reply_markup: kb([[G(t(ctx.lang, 'btn_check'), 'fj:check')]]) });
+    if (sent) setTimeout(() => ctx.api.deleteMessage(ctx.chat.id, sent.message_id).catch(() => {}), 30000).unref?.();
+    return false;
+  }
+  if (ctx.chat.type !== 'private') {
+    const nkey = `${ctx.chat.id}:${uid}`, prior = groupNoticeAt.get(nkey) || 0;
+    if (Date.now() - prior >= 600000) {
+      groupNoticeAt.set(nkey, Date.now());
+      const sent = await ctx.reply(t(ctx.lang, 'forcejoin_msg')).catch(() => null);
+      if (sent) setTimeout(() => ctx.api.deleteMessage(ctx.chat.id, sent.message_id).catch(() => {}), 30000).unref?.();
+    }
+    return false;
+  }
+  const rows = missing.map(({ gate, unverifiable, invalid }) => {
+    const label = unverifiable ? 'عضویت غیرقابل تأیید' : invalid ? '⚠️ نامعتبر' : t(ctx.lang, 'btn_join');
+    const target = String(gate.url || gate.id || '').replace(/^@/, '');
+    return [URLB(label, /^-?\d+$/.test(target) || !target ? `https://t.me/${config.botUsername}` : `https://t.me/${target}`)];
+  });
+  rows.push([G(t(ctx.lang, 'btn_check'), 'fj:check')]);
+  await ctx.reply(t(ctx.lang, 'forcejoin_msg'), { reply_markup: kb(rows) });
+  return false;
 }
 
-async function processUpdate(ctx, update) {
-  try {
-    // Dedupe by update_id (10 min TTL).
-    if (update.update_id !== undefined) {
-      const dup = await ctx.store.seenUpdate(update.update_id);
-      if (dup) return;
-    }
-
-    if (update.message) {
-      await ctx.store.bump("updates");
-      return await handleMessage(ctx, update.message);
-    }
-    if (update.edited_message) {
-      // Treat edited messages lightly: only re-run search if it's a command.
-      return;
-    }
-    if (update.callback_query) return await handleCallback(ctx, update.callback_query);
-    if (update.inline_query) return await handleInlineQuery(ctx, update.inline_query);
-    if (update.chosen_inline_result) return await handleChosenInline(ctx, update.chosen_inline_result);
-    if (update.my_chat_member || update.chat_member) {
-      // Track joins/leaves & bot admin changes. Minimal: bump counters.
-      await ctx.store.bump("member_events");
-      return;
-    }
-  } catch (e) {
-    console.error("processUpdate:", e?.message);
-    try { await ctx.store.logError({ where: "update", msg: e?.message }); } catch {}
+// ---------- /start ----------
+bot.command('start', async (ctx) => {
+  const arg = (ctx.match || '').trim();
+  if (ctx.chat.type !== 'private') {
+    if (rl.groupLimit(ctx.chat.id)) return;
+    return panel.show(ctx, 'help', {}, { push: false });
   }
-}
-
-// ── /dl/<signed> MP3 proxy ────────────────────────────────────────────────────
-// Streams the resolved SoundCloud audio through the worker with Range support,
-// so Telegram can fetch it for InlineQueryResultAudio. Signed to prevent abuse.
-async function dlProxy(ctx, path, request) {
-  const token = decodeURIComponent(path.slice("/dl/".length)).replace(/\.mp3$/, "");
-  const v = await verifyLink(await secret(ctx.env, "LINK_SECRET"), token);
-  if (!v.ok) return new Response("forbidden", { status: 403 });
-
-  const [source, ...idParts] = v.id.split(":");
-  const id = idParts.join(":");
-  if (source !== "sc" || !id) return new Response("bad id", { status: 400 });
-
-  const base = (ctx.sc.base || "").replace(/\/$/, "");
-  if (!base) return new Response("soundcloud backend not configured", { status: 503 });
-  const candidates = [
-    `${base}/api/v1/download?id=${encodeURIComponent(id)}`,
-    `${base}/api/v1/stream?id=${encodeURIComponent(id)}`,
-  ];
-  const requestHeaders = {};
-  const range = request.headers.get("range");
-  if (range) requestHeaders.range = range;
-
-  let res = null;
-  for (const upstream of candidates) {
-    try {
-      const candidate = await fetch(upstream, { headers: requestHeaders });
-      const ct = (candidate.headers.get("content-type") || "").toLowerCase();
-      // /download can return a JSON/HLS manifest for browser-mode tracks.
-      if ((!candidate.ok && candidate.status !== 206) || ct.includes("application/json") || ct.includes("mpegurl") || ct.includes("text/plain")) continue;
-      res = candidate;
-      break;
-    } catch {}
+  if (!(await checkForceJoin(ctx))) return;
+  if (arg.startsWith('t_')) {
+    const sid = arg.slice(2);
+    await H.runDownload(ctx, sid);
+    return;
   }
-  if (!res) return new Response("upstream unavailable", { status: 502 });
-
-  const out = new Headers();
-  out.set("content-type", res.headers.get("content-type") || "audio/mpeg");
-  const cl = res.headers.get("content-length"); if (cl) out.set("content-length", cl);
-  const cr = res.headers.get("content-range"); if (cr) out.set("content-range", cr);
-  out.set("accept-ranges", "bytes");
-  out.set("cache-control", "public, max-age=300");
-  return new Response(res.body, { status: res.status, headers: out });
-}
-
-// ── /setup ────────────────────────────────────────────────────────────────────
-// Idempotent. If the bot was never activated, calling /setup with NO key (or a
-// matching key) runs it once — that's how Deploy-to-Cloudflare users go live
-// with just BOT_TOKEN + OWNER_ID. After activation only the key opens it.
-async function setupRoute(request, env, ctx, url) {
-  const key = url.searchParams.get("key") || "";
-  const already = await ctx.store.getCfg("activated");
-  const adminKey = await secret(env, "ADMIN_SETUP_KEY");
-  if (already && (!adminKey || !timingSafeEqualStr(key, adminKey))) {
-    return json({ ok: false, error: "forbidden" }, 403);
+  if (arg.startsWith('s_')) {
+    await H.doSearch(ctx, decodeURIComponent(arg.slice(2)));
+    return;
   }
-  return runSetup(request, env, ctx, url);
-}
-
-async function runSetup(request, env, ctx, url) {
-  const report = { ok: true, steps: {} };
-  const expectedBase = env.PUBLIC_URL || url.origin;
-  const expectedWebhook = `${expectedBase}/webhook`;
-  if (env.PUBLIC_URL && url.origin !== expectedBase) report.warnings = [...(report.warnings || []), "public_url_mismatch"];
-
-  try {
-    await ctx.tg.setWebhook(expectedWebhook, {
-      secret_token: await secret(env, "WEBHOOK_SECRET"),
-      allowed_updates: ["message", "edited_message", "callback_query", "inline_query", "chosen_inline_result", "my_chat_member", "chat_member"],
-      drop_pending_updates: true,
-      max_connections: 40,
-    });
-    report.steps.webhook = "ok";
-  } catch (e) { report.steps.webhook = e.message; report.ok = false; }
-
-  try {
-    await ctx.tg.setMyCommands(COMMANDS.private, { type: "all_private_chats" }, "fa");
-    await ctx.tg.setMyCommands(COMMANDS.private, { type: "all_private_chats" }, "en");
-    await ctx.tg.setMyCommands(COMMANDS.group, { type: "all_group_chats" });
-    report.steps.commands = "ok";
-  } catch (e) { report.steps.commands = e.message; report.ok = false; }
-
-  try {
-    const desc = `🎧 ${env.BOT_NAME || "Music"} — جستجو، تشخیص و دانلود موزیک\n👨‍💻 ${env.CREATOR_NAME} @${env.OWNER_USERNAME}`;
-    await ctx.tg.setMyDescription({ description: desc });
-    await ctx.tg.setMyShortDescription({ short_description: "🎧 جستجو و دانلود موزیک / Music search & download" });
-    report.steps.description = "ok";
-  } catch (e) { report.steps.description = e.message; report.ok = false; }
-
-  try {
-    const info = await ctx.tg.getWebhookInfo();
-    report.webhook_info = {
-      url: info?.url || null,
-      pending_update_count: info?.pending_update_count || 0,
-      last_error_message: info?.last_error_message || null,
-    };
-    if (info?.url !== expectedWebhook) {
-      report.ok = false;
-      report.steps.webhook_verify = `expected ${expectedWebhook} but got ${info?.url || "none"}`;
+  if (arg.startsWith('ref_')) {
+    const code = arg.slice(4);
+    const res = REF.evaluate(ctx.from.id, code);
+    if (res && res.status === 'pending' || res && res.status === 'held') {
+      await ctx.reply('👥 دعوت شما ثبت شد؛ با عضویت در کانال و اولین استفاده تأیید می‌شود.').catch(() => {});
     }
-    if (info?.last_error_message) {
-      report.ok = false;
-      report.steps.webhook_error = info.last_error_message;
-    }
-  } catch (e) {
-    report.ok = false;
-    report.steps.webhook_info = e.message;
+    return panel.freshMenu(ctx);
   }
-  if (report.ok) await ctx.store.setCfg("activated", { at: Date.now(), url: expectedWebhook });
-  return json(report, report.ok ? 200 : 500);
-}
+  if (arg.startsWith('ig_')) {
+    // deep-link from an inline instagram music button after the user starts the bot
+    const q = Buffer.from(arg.slice(3), 'base64url').toString();
+    if (q) { try { const d = await sc.search(q, 1, ctx.lang); const tr = d.results && d.results[0]; if (tr) return H.runDownload(ctx, sc.sidOf(tr)); } catch (_) {} }
+    return panel.freshMenu(ctx);
+  }
+  await panel.freshMenu(ctx);
+});
 
-// ── /health ───────────────────────────────────────────────────────────────────
-async function healthCheck(ctx) {
-  const [sc, shz, insta, lyr] = await Promise.all([
-    ctx.sc.ping(), ctx.shz.ping(), ctx.insta.ping(), ctx.lyr.ping(),
-  ]);
-  let webhook = null;
-  try { const w = await ctx.tg.getWebhookInfo(); webhook = { url: w.url, pending: w.pending_update_count, error: w.last_error_message || null }; } catch {}
-  return json({
-    ok: true,
-    bot: ctx.env.BOT_NAME,
-    creator: `${ctx.env.CREATOR_NAME} @${ctx.env.OWNER_USERNAME}`,
-    time: new Date().toISOString(),
-    apis: { soundcloud_ms: sc, shazam_ms: shz, instagram_ms: insta, lrclib_ms: lyr },
-    webhook,
+bot.command('invite', async (ctx) => {
+  if (ctx.chat.type !== 'private') return;
+  return panel.show(ctx, 'invite', {}, { push: false });
+});
+bot.command('top', async (ctx) => {
+  return panel.show(ctx, 'top', {}, { push: false });
+});
+
+bot.command(['music', 'search', 'song'], async (ctx) => {
+  const q = (ctx.match || '').trim();
+  if (!q) { await panel.show(ctx, 'menu', {}, { push: false }); return; }
+  await H.doSearch(ctx, q);
+});
+bot.command('lyrics', async (ctx) => {
+  const q = (ctx.match || '').trim();
+  if (q) return H.doLyrics(ctx, q);
+  // reply to a track/audio message -> lyrics of it
+  const rep = ctx.message.reply_to_message;
+  if (rep && (rep.audio || rep.voice)) {
+    const t2 = rep.audio && `${rep.audio.performer || ''} ${rep.audio.title || ''}`.trim();
+    if (t2) return H.doLyrics(ctx, t2);
+  }
+});
+bot.command('recognize', async (ctx) => {
+  const rep = ctx.message.reply_to_message;
+  const target = rep || ctx.message;
+  const fr = extractFileRef(target);
+  if (fr) await H.doRecognize(ctx, fr);
+  else await ctx.reply(t(ctx.lang, 'ask_voice'));
+});
+bot.command('help', async (ctx) => panel.show(ctx, 'help', {}, { push: false }));
+bot.command('perf', async (ctx) => {
+  if (!isOwner(ctx.from.id) || ctx.chat.type !== 'private') return;
+  const r = require('./core/perf').report();
+  const lines = ['⏱ <b>perf</b>'];
+  for (const [k, v] of Object.entries(r)) {
+    if (k === 'eventLoop') lines.push(`loop p50=${v.p50}ms p95=${v.p95}ms max=${v.max}ms`);
+    else if (k === 'rss') lines.push(`rss ${v}MB`);
+    else lines.push(`${k} n=${v.n} p50=${v.p50} p95=${v.p95} max=${v.max}`);
+  }
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+});
+bot.hears(/^(?:راهنما|help)$/i, async (ctx) => panel.show(ctx, 'help', {}, { push: false }));
+bot.command('admin', async (ctx) => {
+  if (!isOwner(ctx.from.id) || ctx.chat.type !== 'private') return;
+  await panel.show(ctx, 'admin', {}, { push: false });
+});
+bot.command('gatetest', async (ctx) => {
+  if (!isOwner(ctx.from.id) || ctx.chat.type !== 'private') return;
+  store.set('settings', 'gatetest:' + String(ctx.from.id), Date.now() + 300000);
+  await ctx.reply('آزمایش gate برای ۵ دقیقه فعال شد؛ اجرای درخواست شما به‌صورت غیرعضو بررسی می‌شود.');
+});
+// /audiotest <query|sid> — forensic A/B/C/D comparison for the "12-second" bug.
+// Owner-only. Sends up to 4 renditions of ONE track with mp4check results so the
+// owner can confirm which container plays fully with a working seek bar.
+//   A = current pipeline output (in-memory bytes -> upload)
+//   B = progressive M4A remuxed in-memory via ffmpeg -c copy (moov faststart)
+//   C = MP3 (libmp3lame) in-memory
+//   D = sendAudio by worker URL (verifies whether URL-send lands as `audio`)
+// Media is handled entirely in memory; nothing is written to disk.
+bot.command('audiotest', async (ctx) => {
+  if (!isOwner(ctx.from.id) || ctx.chat.type !== 'private') return;
+  const q = (ctx.match || '').trim();
+  if (!q) { await ctx.reply('فرمت: /audiotest <نام آهنگ یا sid>'); return; }
+  const mp4check = require('./lib/mp4check');
+  const { cleanTrackMeta } = require('./services/trackMeta');
+  const { InputFile } = require('grammy');
+  await ctx.reply('⏳ در حال آماده‌سازی نسخه‌های A/B/C/D…').catch(() => {});
+  let tr;
+  try {
+    if (/^\d+$/.test(q)) tr = await sc.track(q);
+    else { const d = await sc.search(q, 1, ctx.lang); tr = (d.results || [])[0]; }
+  } catch (_) {}
+  if (!tr) { await ctx.reply('آهنگ پیدا نشد.'); return; }
+  const sid = sc.sidOf(tr);
+  const meta = cleanTrackMeta(tr);
+  const title = meta.title || 'track', performer = meta.artist || '';
+  const expected = Math.round((tr.duration_ms || 0) / 1000);
+  let audio;
+  try { audio = await require('./bot/send').buildAudioBuffer(tr, sid); }
+  catch (e) { await ctx.reply('دانلود منبع ناموفق: ' + (e.code || e.message)); return; }
+  const report = (name, bufOrNull, extra) => {
+    if (!bufOrNull) return `• ${name}: ساخته نشد`;
+    const c = mp4check.check(bufOrNull, { expectedSeconds: expected });
+    const flags = [c.fragmented ? 'fMP4' : 'progressive', `moovBeforeMdat=${c.moovBeforeMdat}`, `dur=${c.sttsDurS != null ? c.sttsDurS.toFixed(1) : '?'}s`, c.ok ? '✅' : '❌ ' + c.reasons.join(',')].join(' ');
+    return `• ${name}: ${flags}${extra ? ' ' + extra : ''}`;
+  };
+  const lines = [`🧪 audiotest: ${performer} — ${title} (${expected}s)`];
+  // A — current bytes as fetched (uploaded)
+  lines.push(report('A:current-upload', audio.buf, `via=${audio.via}`));
+  // B — progressive m4a remux (ffmpeg -c copy, in-memory via pipe)
+  let bBuf = null;
+  try { bBuf = await remuxInMemory(audio.buf, ['-c', 'copy', '-movflags', '+faststart', '-f', 'mp4']); } catch (_) {}
+  lines.push(report('B:m4a-remux', bBuf));
+  // C — mp3 (libmp3lame) in-memory
+  let cBuf = null;
+  try { cBuf = await remuxInMemory(audio.buf, ['-c:a', 'libmp3lame', '-q:a', '5', '-f', 'mp3']); } catch (_) {}
+  lines.push(report('C:mp3', cBuf, '(mp3 has no moov; flagged separately)'));
+  await ctx.reply(lines.join('\n'));
+  const base = { title, performer, duration: expected || undefined };
+  const safe = (s) => s.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
+  // A
+  try { await ctx.api.sendAudio(ctx.chat.id, new InputFile(audio.buf, safe(performer + ' - ' + title) + '.mp3'), { ...base, caption: '🅰️ current upload (mp3-name)' }); } catch (e) { await ctx.reply('A send failed: ' + (e.description || e.message)); }
+  // B
+  if (bBuf) { try { await ctx.api.sendAudio(ctx.chat.id, new InputFile(bBuf, safe(performer + ' - ' + title) + '.m4a'), { ...base, caption: '🅱️ m4a remux faststart' }); } catch (e) { await ctx.reply('B send failed: ' + (e.description || e.message)); } }
+  // C
+  if (cBuf) { try { await ctx.api.sendAudio(ctx.chat.id, new InputFile(cBuf, safe(performer + ' - ' + title) + '.mp3'), { ...base, caption: '🅲 mp3 libmp3lame' }); } catch (e) { await ctx.reply('C send failed: ' + (e.description || e.message)); } }
+  // D — URL send
+  try {
+    const sent = await ctx.api.sendAudio(ctx.chat.id, sc.streamUrl(sid), { ...base, caption: '🅳 URL send (worker /stream)' });
+    const kind = sent.audio ? 'audio' : (sent.document ? 'document' : 'other');
+    await ctx.reply('D نتیجه: ' + kind + (sent.document ? ` (mime=${sent.document.mime_type})` : ''));
+  } catch (e) { await ctx.reply('D send failed: ' + (e.description || e.message)); }
+});
+// in-memory ffmpeg remux via pipes; never touches disk. Only for owner forensics.
+function remuxInMemory(buf, args, timeout = 60000) {
+  const { spawn } = require('node:child_process');
+  return new Promise((resolve, reject) => {
+    const p = spawn('nice', ['-n', '10', 'ffmpeg', '-v', 'error', '-i', 'pipe:0', ...args, 'pipe:1'], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const chunks = [];
+    const to = setTimeout(() => { try { p.kill('SIGKILL'); } catch (_) {} ; reject(new Error('timeout')); }, timeout);
+    p.stdout.on('data', (c) => chunks.push(c));
+    p.on('error', (e) => { clearTimeout(to); reject(e); });
+    p.on('close', (code) => { clearTimeout(to); if (code !== 0) return reject(new Error('ffmpeg ' + code)); resolve(Buffer.concat(chunks)); });
+    p.stdin.on('error', () => {});
+    p.stdin.write(buf); p.stdin.end();
   });
 }
 
-// ── / status page ────────────────────────────────────────────────────────────
-function statusPage(request, env) {
-  const name = env.BOT_NAME || "Music";
-  const html = `<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>${name} Bot</title>
-<style>body{margin:0;font-family:system-ui,Tahoma;background:#0d1117;color:#e6edf3;display:flex;align-items:center;justify-content:center;min-height:100vh}
-.c{text-align:center;padding:2rem}.dot{display:inline-block;width:14px;height:14px;border-radius:50%;background:#3fb950;box-shadow:0 0 12px #3fb950;vertical-align:middle}
-h1{font-size:2rem;margin:.4rem 0}.st{color:#3fb950;font-weight:700}.muted{color:#8b949e}a{color:#58a6ff}</style></head>
-<body><div class="c"><div class="dot"></div><h1>🎧 ${name} Bot</h1>
-<p class="st">Online</p><p class="muted">Music search · recognize · download<br>on Cloudflare Workers</p>
-<p class="muted">👨‍💻 ${env.CREATOR_NAME || "Ali Mousavi"} — <a href="https://t.me/${env.OWNER_USERNAME || "AliMsvD"}">@${env.OWNER_USERNAME || "AliMsvD"}</a></p></div></body></html>`;
-  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+bot.command('debug_reset', async (ctx) => {
+  if (process.env.E2E_MODE !== '1') return;
+  if (!isOwner(ctx.from.id) || ctx.chat.type !== 'private') return;
+  const uid = String(ctx.match || '').trim();
+  if (!/^\d+$/.test(uid)) return ctx.reply('usage: /debug_reset <user_id>');
+  for (const ns of ['favorites', 'history', 'negcache', 'panel', 'users', 'referral']) {
+    try { store.del(ns, uid); } catch (_) {}
+  }
+  for (const [k, e] of store.all('referral')) {
+    if (e.invitee === uid || e.inviter === uid) store.del('referral', k);
+  }
+  try { memberCache.clear(); } catch (_) {}
+  await ctx.reply('test record cleared for ' + uid);
+});
+bot.command('diag', async (ctx) => {
+  if (ctx.chat.type === 'private') return;
+  if (!(await isGroupAdmin(ctx))) return;
+  const me = await bot.api.getMe().catch(() => null);
+  let member = null;
+  try { member = await bot.api.getChatMember(ctx.chat.id, me.id); } catch (_) {}
+  const gs = chatSettings(ctx.chat.id);
+  const isAdmin = member && ['administrator', 'creator'].includes(member.status);
+  const lines = [
+    `🩺 <b>تشخیص گروه</b>`,
+    `🤖 وضعیت ربات: ${member ? member.status : 'نامشخص'}`,
+    `👁 دیدن پیام‌ها: ${isAdmin ? 'همه (ادمین)' : 'فقط فرمان/منشن/ریپلای — برای دیدن همه، ادمین کن یا /setprivacy را خاموش کن'}`,
+    `🧠 تشخیص هوشمند: ${gs.smart !== false ? 'روشن' : 'خاموش'}`,
+    `💬 نوع چت: ${ctx.chat.type}${ctx.message && ctx.message.message_thread_id ? ' · topic ' + ctx.message.message_thread_id : ''}`,
+    `🛰 آخرین آپدیت: ${lastUpdateSeen.update_id ?? '—'} · ${lastUpdateSeen.kind}`,
+    `🧹 آخرین حذف: ${lastDrop.code} · ${lastDrop.update_id ?? '—'}`,
+    `✉️ دسترسی ارسال: ${member && member.status !== 'kicked' && member.status !== 'left' ? '✅' : '❌'}`,
+  ];
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+});
+bot.command('settings', async (ctx) => {
+  if (ctx.chat.type === 'private') return;
+  if (!(await isGroupAdmin(ctx))) return;
+  await showGroupSettings(ctx);
+});
+
+async function simulateGateForOwner(ctx) {
+  const s = store.get('settings', 'global') || {};
+  const fj = Array.isArray(s.forcejoin) ? s.forcejoin : (s.forcejoin ? [s.forcejoin] : []);
+  if (!fj.length) { await ctx.reply('gate برای آزمایش تعریف نشده است.'); return false; }
+  const oldFrom = ctx.from;
+  try {
+    const fake = { ...ctx, from: { ...oldFrom, id: -1 }, chat: { ...ctx.chat, type: 'private' } };
+    return !(await checkForceJoin(fake, { simulate: true, bypass: true }));
+  } finally { ctx.from = oldFrom; }
 }
 
-// ── cron ──────────────────────────────────────────────────────────────────────
-async function cronTick(ctx, event) {
-  // 1) resume any pending broadcast jobs (every minute).
+// ---------- group settings ----------
+async function isGroupAdmin(ctx) {
+  if (isOwner(ctx.from.id)) return true;
   try {
-    const jobs = (await ctx.store.listJobs()).filter((j) => j.status === "queued" || j.status === "running");
-    for (const j of jobs) ctx.exec.waitUntil(runBroadcastChunk(ctx, j.id));
-  } catch (e) { await ctx.store.logError({ where: "cron.jobs", msg: e.message }); }
+    const m = await ctx.api.getChatMember(ctx.chat.id, ctx.from.id);
+    return ['administrator', 'creator'].includes(m.status);
+  } catch (_) { return false; }
+}
+async function showGroupSettings(ctx) {
+  const lang = ctx.lang;
+  const s = chatSettings(ctx.chat.id);
+  const onoff = (v) => v ? t(lang, 'on') : t(lang, 'off');
+  const rows = [
+    [B(t(lang, 'gset_smart', { v: onoff(s.smart !== false) }), 'gs:smart')],
+    [B(t(lang, 'gset_autodel', { v: s.autodel ? t(lang, 'minutes_n', { n: s.autodel }) : t(lang, 'disabled') }), 'gs:autodel')],
+    [B(t(lang, 'gset_lang'), 'gs:lang')],
+    [R(t(lang, 'close'), 'nav:close')],
+  ];
+  await ctx.reply(t(lang, 'group_settings'), { reply_markup: kb(rows) });
+}
 
-  // 2) webhook watchdog (every 5-min trigger — cheap enough to run each tick).
-  try {
-    const info = await ctx.tg.getWebhookInfo();
-    let base = ctx.env.PUBLIC_URL || "";
-    if (!base) {
-      try { base = (await ctx.store.getCfg("activated"))?.url || ""; } catch {}
-      base = base.replace(/\/webhook\/?$/, "");
+// ---------- file extraction ----------
+function extractFileRef(msg) {
+  if (!msg) return null;
+  if (msg.voice) return { file_id: msg.voice.file_id, mime: msg.voice.mime_type, kind: 'voice' };
+  if (msg.audio) return { file_id: msg.audio.file_id, mime: msg.audio.mime_type, kind: 'audio' };
+  if (msg.video) return { file_id: msg.video.file_id, mime: msg.video.mime_type, kind: 'video' };
+  if (msg.video_note) return { file_id: msg.video_note.file_id, mime: 'video/mp4', kind: 'video' };
+  if (msg.document && /audio|video|ogg|mp4|mpeg/.test(msg.document.mime_type || '')) return { file_id: msg.document.file_id, mime: msg.document.mime_type, kind: 'doc' };
+  return null;
+}
+
+// ---------- text messages (private) ----------
+const TRIGGERS = ['آهنگ', 'موزیک', 'پخش', 'متن آهنگ', 'ترانه', 'music', 'song', 'play', 'lyrics', 'track', 'песня', 'музыка', '播放', 'أغنية', 'اغنية', 'لحن', 'canción', 'musica', 'musique', 'lied', 'şarkı', 'mahnı', 'اهنگ'];
+
+bot.on('my_chat_member', () => { memberCache.clear(); });
+bot.on('chat_member', () => { memberCache.clear(); });
+
+bot.on('message', async (ctx) => {
+  const msg = ctx.message;
+  if (msg.from && msg.from.is_bot) return;
+  if (msg.via_bot || (msg.forward_origin && ctx.chat.type !== 'private')) return; // ignore bot-forwarded spam
+
+  const uid = ctx.from && ctx.from.id;
+  const lang = ctx.lang;
+
+  // voice/audio/video -> recognize (private: always; group: only via reply/command handled elsewhere)
+  const fr = extractFileRef(msg);
+  const aw0 = H.getAwait(uid);
+  if (fr && ctx.chat.type === 'private' && (!aw0 || aw0.type === 'recog')) {
+    H.clearAwait(uid);
+    return H.doRecognize(ctx, fr);
+  }
+  // group: recognize on reply-to-bot media
+  if (fr && ctx.chat.type !== 'private' && msg.reply_to_message && (await isReplyToBot(ctx, msg))) {
+    if (rl.groupLimit(ctx.chat.id)) return;
+    return H.doRecognize(ctx, fr);
+  }
+
+  const text = (msg.text || msg.caption || '').trim();
+  if (ctx.chat.type !== 'private' && text && !/^\/(?:start|help|music|search|song|recognize|diag|settings)(?:@\w+)?(?:\s|$)/i.test(text) && !text.toLowerCase().includes('@' + config.botUsername.toLowerCase()) && !(msg.reply_to_message && (await isReplyToBot(ctx, msg))) && !/^(?:راهنما|help)$/i.test(text) && !ig.isInstaUrl(text) && !isSoundCloudUrl(text)) {
+    const gs = chatSettings(ctx.chat.id);
+    if (gs.smart === false || text.length >= 80 || /[@#]/.test(text) || containsLink(msg) || text.split(/\s+/).length > 6) return;
+  }
+
+  // awaiting state (search query, insta link, ticket, admin inputs)
+  const aw = H.getAwait(uid);
+  if (aw && ctx.chat.type === 'private') {
+    H.clearAwait(uid);
+    return handleAwait(ctx, aw, msg, text);
+  }
+
+  if (!text) return;
+
+  // INSTAGRAM link — auto resolve + download media + music button
+  if (ig.isInstaUrl(text)) {
+    const addressed = ctx.chat.type === 'private' || (await isReplyToBot(ctx, msg));
+    if (addressed) {
+      if (ctx.chat.type !== 'private' && (!allowedLinkRequest(ctx) || rl.groupLimit(ctx.chat.id))) return;
+      return H.doInsta(ctx, ig.cleanUrl(text));
     }
-    const want = base ? `${base.replace(/\/$/, "")}/webhook` : null;
-    const bad = !!info.last_error_message || (want && info.url !== want);
-    if (bad) {
-      await setupWebhook(ctx);
-      const owner = ctx.ownerId;
-      if (owner) {
-        await ctx.tg.sendMessage(owner,
-          `⚠️ Webhook ${info.last_error_message ? "had an error" : "mismatched"} and was reset.\n` +
-          `err: ${info.last_error_message || "url mismatch"}`).catch(() => {});
+    return;
+  }
+  // SOUNDCLOUD link -> direct download of the resolved track
+  if (isSoundCloudUrl(text)) {
+    const addressed = ctx.chat.type === 'private' || (await isReplyToBot(ctx, msg));
+    if (addressed) {
+      if (ctx.chat.type !== 'private' && (!allowedLinkRequest(ctx) || rl.groupLimit(ctx.chat.id))) return;
+      try {
+        const tr = await sc.resolveUrl(text);
+        return H.runDownload(ctx, sc.sidOf(tr));
+      } catch (_) { return ctx.reply(t(lang, 'error_generic')); }
+    }
+    return;
+  }
+
+  if (ctx.chat.type === 'private') {
+    if (!(await checkForceJoin(ctx))) return;
+    if (/^(متن|ترانه|lyrics?)\s+/i.test(text)) return H.doLyrics(ctx, text.replace(/^(متن|ترانه|lyrics?)\s+/i, ''));
+    return H.doSearch(ctx, text);
+  }
+
+  // ---- GROUP logic ----
+  if (rl.isBanned(uid)) return;
+  const gs = chatSettings(ctx.chat.id);
+
+  // reply to bot -> search
+  if (await isReplyToBot(ctx, msg)) {
+    if (rl.groupLimit(ctx.chat.id)) return;
+    return H.doSearch(ctx, text);
+  }
+  // mention
+  if (text.toLowerCase().includes('@' + config.botUsername.toLowerCase())) {
+    const q = text.replace(new RegExp('@' + config.botUsername, 'gi'), '').trim();
+    if (q) { if (rl.groupLimit(ctx.chat.id)) return; return H.doSearch(ctx, q); }
+    return;
+  }
+  // trigger word first + name
+  const first = text.split(/\s+/)[0].toLowerCase();
+  if (TRIGGERS.includes(first) && text.split(/\s+/).length > 1) {
+    const q = text.slice(first.length).trim();
+    if (q) { if (rl.groupLimit(ctx.chat.id)) return; return H.doSearch(ctx, q); }
+    return;
+  }
+  // smart detect
+  if (gs.smart !== false && text.length < 80) {
+    const words = text.split(/\s+/).filter(Boolean);
+    if (words.length <= 6 && words.length >= 1 && !/[@#\/]/.test(text) && !containsLink(msg)) {
+      return smartDetect(ctx, text);
+    }
+  }
+});
+
+function containsLink(msg) {
+  const text = msg.text || msg.caption || '';
+  if (/https?:\/\//i.test(text)) return true;
+  if (msg.entities && msg.entities.some((e) => e.type === 'url' || e.type === 'text_link')) return true;
+  if (msg.caption_entities && msg.caption_entities.some((e) => e.type === 'url' || e.type === 'text_link')) return true;
+  return false;
+}
+
+// Supported links in groups are allowed without a reply/mention, but still
+// bounded per user and per group to prevent link spam.
+const groupLinkSeen = new Map();
+function allowedLinkRequest(ctx) {
+  const now = Date.now();
+  const userKey = `${ctx.from && ctx.from.id}:links`, chatKey = `${ctx.chat && ctx.chat.id}:links`;
+  const takeLimit = (key, max) => {
+    const arr = (groupLinkSeen.get(key) || []).filter((x) => now - x < 60000);
+    if (arr.length >= max) { groupLinkSeen.set(key, arr); return false; }
+    arr.push(now); groupLinkSeen.set(key, arr); return true;
+  };
+  return takeLimit(userKey, 5) && takeLimit(chatKey, 10);
+}
+
+const smartCd = new Map();
+const SE = require('./services/searchEngine');
+async function smartDetect(ctx, text) {
+  const cid = ctx.chat.id;
+  const last = smartCd.get(cid) || 0;
+  if (Date.now() - last < 20000) return; // group cooldown
+  const key = 'neg2:' + normalize(text);
+  if (store.get('negcache', key)) return;
+  try {
+    const result = await SE.search(text, ctx.lang);
+    if (result.kind !== 'ok' || !result.items.length) { store.set('negcache', key, 1); return; }
+    const best = result.items[0];
+    // strict bar for unsolicited group responses
+    if (best.score < 0.55) { store.set('negcache', key, 1); return; }
+    smartCd.set(cid, Date.now());
+    if (rl.groupLimit(cid)) return;
+    const top = best.tr;
+    const meta = cleanTrackMeta(top);
+    const sid = sc.sidOf(top);
+    // Group unsolicited detections NEVER auto-send a file (F6): an artist-only
+    // or ambiguous message must show the result panel, not a download. Direct
+    // file send lives only in the explicit exact-match path. Here we always
+    // show a compact result card with a download button.
+    await ctx.reply(`🎵 <b>${esc(meta.artist)} — ${esc(meta.title)}</b>\n⏱ ${esc(top.duration || '')}`, {
+      parse_mode: 'HTML',
+      reply_markup: kb([[G(t(ctx.lang, 'dl'), 'dl:' + sid)]]),
+    });
+    store.incrStats('search');
+  } catch (_) {}
+}
+
+async function isReplyToBot(ctx, msg) {
+  const rep = msg.reply_to_message;
+  if (!rep || !rep.from) return false;
+  const me = await bot.api.getMe().catch(() => null);
+  return me ? rep.from.id === me.id : false;
+}
+
+// ---------- awaiting handler ----------
+async function handleAwait(ctx, aw, msg, text) {
+  const uid = ctx.from.id, lang = ctx.lang;
+  switch (aw.type) {
+    case 'search': return H.doSearch(ctx, text);
+    case 'insta': return ig.isInstaUrl(text) ? H.doInsta(ctx, text) : ctx.reply(t(lang, 'insta_none'));
+    case 'ticket': {
+      const n = (store.get('stats', 'ticket_n') || 0) + 1;
+      store.set('stats', 'ticket_n', n);
+      store.set('tickets', String(n), { uid, name: ctx.from.first_name, text, open: true, at: Date.now() });
+      await ctx.api.sendMessage(config.ownerId, t(lang, 'support_owner_new', { n, name: esc(ctx.from.first_name || ''), id: uid, text: esc(text) }), {
+        parse_mode: 'HTML', reply_markup: kb([[G(t(lang, 'btn_reply'), `tk:r:${n}`)]]),
+      });
+      return ctx.reply(t(lang, 'support_sent', { n }));
+    }
+    case 'addchannel': {
+      let chId = text.trim();
+      if (msg.forward_from_chat) chId = String(msg.forward_from_chat.id);
+      if (!/^-?\d+$|^@/.test(chId)) return ctx.reply(t(lang, 'error_generic'));
+      const list = channel.channels();
+      list.push({ id: chId, title: chId, auto: true, lang: 'fa', signature: '' });
+      channel.saveChannels(list);
+      const st = await channel.channelStatus(ctx.api, { id: chId });
+      await ctx.reply(st.ok ? t(lang, 'channel_status_ok') : t(lang, 'channel_status_bad', { reason: esc(st.reason || '') }));
+      return panel.show(ctx, 'admin_channels', {}, { push: false });
+    }
+    case 'ban': {
+      const target = String(text).replace(/\D/g, '');
+      if (!target) return ctx.reply(t(lang, 'error_generic'));
+      if (store.get('bans', target)) { store.del('bans', target); } else { store.set('bans', target, { at: Date.now(), by: uid }); }
+      await ctx.reply(t(lang, 'ban_done'));
+      return panel.show(ctx, 'admin_bans', {}, { push: false });
+    }
+    case 'broadcast': {
+      const users = store.keys('users');
+      await ctx.reply(t(lang, 'broadcast_started', { n: users.length }));
+      broadcast(ctx, text, users);
+      return;
+    }
+    case 'forceedit': {
+      const s = store.get('settings', 'global') || {};
+      const fj = Array.isArray(s.forcejoin) ? s.forcejoin : (s.forcejoin ? [s.forcejoin] : []);
+      const ch = text.trim();
+      if ((ch.startsWith('@') || /^-?\d+$/.test(ch)) && !fj.includes(ch)) fj.push(ch);
+      s.forcejoin = fj;
+      store.set('settings', 'global', s);
+      await ctx.reply(t(lang, 'ban_done'));
+      return panel.show(ctx, 'admin_fj', {}, { push: false });
+    }
+    case 'posttext': {
+      // edit pending post caption then publish
+      const pp = store.get('settings', 'pending_posts') || {};
+      const item = pp[aw.sid];
+      if (item) { item.tr.customCaption = text; store.set('settings', 'pending_posts', pp); }
+      return ctx.reply('✅');
+    }
+    case 'scfollow': {
+      const fl = channel.follows();
+      fl.push({ term: text.trim(), at: Date.now() });
+      channel.saveFollows(fl);
+      return ctx.reply('✅ ' + esc(text));
+    }
+  }
+}
+
+async function broadcast(ctx, text, users) {
+  let ok = 0, fail = 0;
+  for (const u of users) {
+    try { await ctx.api.sendMessage(u, text, { parse_mode: 'HTML' }); ok++; }
+    catch (_) { fail++; }
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  await ctx.api.sendMessage(config.ownerId, t(ctx.lang, 'broadcast_done', { ok, fail }));
+}
+
+// ---------- callbacks ----------
+bot.on('callback_query', async (ctx) => {
+  const cq = ctx.callbackQuery;
+  const data = cq.data || '';
+  const uid = cq.from.id;
+  const lang = ctx.lang = userLang(uid, ctx.chat);
+  const answer = (tx, alert) => ctx.answerCallbackQuery({ text: tx, show_alert: !!alert }).catch(() => {});
+
+  // admin guard for a: and ach/atk/cp management
+  const isAdminCb = /^(a:|ach|atk|aset|aub|cp:|bc|gs:|ref)/.test(data);
+  if (isAdminCb && !isOwner(uid) && !data.startsWith('gs:')) { return answer(t(lang, 'admin_only'), true); }
+
+  try {
+    if (data === 'noop') return answer();
+    if (data === 'nav:back') { await answer(); return panel.back(ctx); }
+    if (data === 'nav:menu') { await answer(); return panel.show(ctx, 'menu', {}, { push: false }); }
+    if (data === 'nav:close') { await answer(); try { await ctx.deleteMessage(); } catch (_) {} return; }
+    if (data === 'fj:check') {
+      const ok = await checkForceJoin(ctx, { bypass: true });
+      if (ok) {
+        await answer('✅');
+        memberCache.clear();
+        const prior = getPanel(ctx.chat.id, uid);
+        const pending = prior && prior.pendingRequest;
+        if (pending && pending.type === 'download') { setPanel(ctx.chat.id, uid, { pendingRequest: null }); return H.runDownload(ctx, pending.sid); }
+        if (pending && pending.type === 'search') { setPanel(ctx.chat.id, uid, { pendingRequest: null }); return H.doSearch(ctx, pending.query); }
+        return panel.show(ctx, 'menu', {}, { push: false });
       }
+      return answer(t(lang, 'not_member'), true);
     }
-  } catch (e) { /* no token configured yet */ }
+    if (data.startsWith('m:')) {
+      await answer();
+      const m = data.slice(2);
+      if (m === 'new') return showNew(ctx);
+      if (m === 'fav') return panel.show(ctx, 'favorites');
+      if (m === 'hist') return panel.show(ctx, 'history');
+      if (m === 'lang') return panel.show(ctx, 'lang');
+      if (m === 'support') { H.setAwait(uid, { type: 'ticket' }); return editPanel(ctx, t(lang, 'support_ask'), [[R(t(lang, 'back'), 'nav:menu')]]); }
+      if (m === 'help') return panel.show(ctx, 'help');
+      if (m === 'invite') return panel.show(ctx, 'invite');
+      if (m === 'top') return panel.show(ctx, 'top');
+      if (m === 'admin') return panel.show(ctx, 'admin');
+    }
+    if (data.startsWith('lang:')) {
+      const c = data.slice(5);
+      setUserLang(uid, c);
+      if (ctx.chat.type !== 'private') setChatLang(ctx.chat.id, c);
+      await answer(t(c, 'lang_set', { lang: c }));
+      ctx.lang = c;
+      return panel.show(ctx, 'menu', {}, { push: false });
+    }
+    if (data.startsWith('pg:')) {
+      const st = panel.stateFor(ctx.chat.id, cq.message.message_id);
+      const page = Number(data.slice(3));
+      const cur = st && st.current;
+      if (ctx.chat.type !== 'private' && cur && cur.params && cur.params.owner && cur.params.owner !== uid) {
+        return answer('این پنل برای کاربر دیگری است', true);
+      }
+      await answer();
+      if (cur && cur.name === 'results' && cur.params.items) return panel.show(ctx, 'results', { ...cur.params, page }, { push: false });
+      return;
+    }
+    if (data.startsWith('fl:')) {
+      const st = panel.stateFor(ctx.chat.id, cq.message.message_id);
+      const cur = st && st.current;
+      const mode = data.slice(3);
+      if (ctx.chat.type !== 'private' && cur && cur.params && cur.params.owner && cur.params.owner !== uid) {
+        return answer('این پنل برای کاربر دیگری است', true);
+      }
+      await answer();
+      if (cur && cur.name === 'results' && cur.params.items) {
+        if (mode === 'artist') {
+          const artist = cleanTrackMeta(cur.params.items[0]).artist;
+          if (artist) return H.doSearch(ctx, artist);
+        }
+        return panel.show(ctx, 'results', { ...cur.params, filter: mode, page: 1 }, { push: false });
+      }
+      return;
+    }
+    if (data.startsWith('pick:')) {
+      const sid = data.slice(5);
+      const st = panel.stateFor(ctx.chat.id, cq.message.message_id);
+      const cur = st && st.current;
+      if (ctx.chat.type !== 'private' && cur && cur.params && cur.params.owner && cur.params.owner !== uid) {
+        return answer('این پنل برای کاربر دیگری است', true);
+      }
+      if (ctx.chat.type !== 'private' && cur && cur.params && cur.params.at && Date.now() - cur.params.at > 600000) {
+        await answer('این پنل منقضی شده است', true);
+        try { await ctx.deleteMessage(); } catch (_) {}
+        return;
+      }
+      const q = cur && cur.params && cur.params.q;
+      if (q) {
+        const learned = store.get('settings', 'search_learning') || {};
+        const tr = await sc.track(sid).catch(() => null);
+        if (tr) {
+          const k = normalize(q);
+          const old = learned[k] || {};
+          learned[k] = { sid, artist: tr.artist, title: tr.title, count: (old.count || 0) + 1, at: Date.now() };
+          store.set('settings', 'search_learning', learned);
+        }
+      }
+      return H.runDownload(ctx, sid);
+    }
+    if (data.startsWith('trk:')) { await answer(); return panel.show(ctx, 'track', { sid: data.slice(4) }); }
+    if (data.startsWith('dl:')) { return H.runDownload(ctx, data.slice(3)); }
+    if (data.startsWith('q:')) {
+      await answer();
+      const q = Buffer.from(data.slice(2), 'base64url').toString();
+      return q ? H.doSearch(ctx, q) : undefined;
+    }
+    if (data.startsWith('qa:')) {
+      await answer(t(lang, 'searching'));
+      const q = Buffer.from(data.slice(3), 'base64url').toString();
+      return q ? H.doSearch(ctx, q) : undefined;
+    }
+    if (data.startsWith('lyr:')) { await answer(); return panel.show(ctx, 'lyrics', { sid: data.slice(4) }); }
+    if (data.startsWith('sim:')) {
+      await answer(t(lang, 'searching'));
+      const tr = await sc.track(data.slice(4));
+      return H.doSearch(ctx, `${tr.artist} ${tr.title}`.split(' ').slice(0, 3).join(' '));
+    }
+    if (data.startsWith('fava:')) { const tr = await sc.track(data.slice(5)); H.toggleFav(uid, { ...tr, sid: data.slice(5) }); await answer('⭐'); return panel.show(ctx, 'track', { sid: data.slice(5) }, { push: false }); }
+    if (data.startsWith('favd:')) { const tr = await sc.track(data.slice(5)); H.toggleFav(uid, { ...tr, sid: data.slice(5) }); await answer('✓'); return panel.show(ctx, 'track', { sid: data.slice(5) }, { push: false }); }
+    if (data === 'rlyr') {
+      const p = getPanel(ctx.chat.id, uid);
+      const d = p && p.recog;
+      await answer();
+      if (d && d.lyrics && d.lyrics.text) return editPanel(ctx, `🎼 <b>${esc(d.title)}</b>\n\n${esc(d.lyrics.text).slice(0, 3800)}`, [[R(t(lang, 'back'), 'nav:menu')]]);
+      return;
+    }
+    if (data.startsWith('rdl:')) return H.recogDownload(ctx, data.slice(4));
+    if (data.startsWith('rsim:')) {
+      await answer(t(lang, 'searching'));
+      const q = Buffer.from(data.slice(5), 'base64url').toString();
+      return q ? H.doSearch(ctx, q) : undefined;
+    }
+    if (data.startsWith('igm:')) return H.instaMusic(ctx, data.slice(4));
+    if (data === 'igx') return H.instaRecognize(ctx);
+    if (data.startsWith('igi:')) return inlineInstaMusic(ctx, data.slice(4));
+    // ----- admin -----
+    if (data === 'a:panel') { await answer(); return panel.show(ctx, 'admin'); }
+    if (data === 'a:stats') { await answer(); return panel.show(ctx, 'admin_stats'); }
+    if (data === 'a:health') { await answer(); return panel.show(ctx, 'admin_health'); }
+    if (data === 'a:chans') { await answer(); return panel.show(ctx, 'admin_channels'); }
+    if (data === 'a:bans') { await answer(); return panel.show(ctx, 'admin_bans'); }
+    if (data === 'a:set') { await answer(); return panel.show(ctx, 'admin_settings'); }
+    if (data === 'a:langs') { await answer(); return panel.show(ctx, 'admin_langs'); }
+    if (data === 'a:tickets') { await answer(); return panel.show(ctx, 'admin_tickets'); }
+    if (data === 'a:refs') { await answer(); return panel.show(ctx, 'admin_refs'); }
+    if (data === 'ref:toggle') {
+      const s = store.get('settings', 'ref') || {};
+      s.enabled = !(s.enabled !== false);
+      store.set('settings', 'ref', s);
+      await answer(s.enabled ? 'روشن' : 'خاموش');
+      return panel.show(ctx, 'admin_refs', {}, { push: false });
+    }
+    if (data === 'ref:csv') {
+      await answer();
+      const rows = store.all('referral').map(([k, e]) => [k, e.invitee, e.inviter, e.status, e.reason || '', new Date(e.ts).toISOString()].join(','));
+      const csv = 'id,invitee,inviter,status,reason,ts\n' + rows.join('\n');
+      return ctx.api.sendDocument(ctx.chat.id, new InputFile(Buffer.from(csv), 'referrals.csv'));
+    }
+    if (data.startsWith('refok:')) {
+      const invitee = data.slice(6);
+      const u = store.get('users', invitee) || {};
+      u.ref_status = 'verified'; store.set('users', invitee, u);
+      for (const [k, e] of store.all('referral')) if (e.invitee === invitee && e.status === 'held') { e.status = 'verified'; e.reason = 'owner_approved'; store.set('referral', k, e); }
+      await answer('تأیید شد');
+      return panel.show(ctx, 'admin_refs', {}, { push: false });
+    }
+    if (data.startsWith('refx:')) {
+      const invitee = data.slice(5);
+      const u = store.get('users', invitee) || {};
+      u.ref_status = 'rejected'; u.referred_by = null; store.set('users', invitee, u);
+      for (const [k, e] of store.all('referral')) if (e.invitee === invitee && (e.status === 'held' || e.status === 'pending')) { e.status = 'rejected'; e.reason = 'owner_rejected'; store.set('referral', k, e); }
+      await answer('رد شد');
+      return panel.show(ctx, 'admin_refs', {}, { push: false });
+    }
+    if (data === 'a:features') { await answer(); return panel.show(ctx, 'admin_features'); }
+    if (data.startsWith('feat:')) {
+      const key = data.slice(5);
+      const s = store.get('settings', 'features') || {};
+      s[key] = !(s[key] !== false);
+      store.set('settings', 'features', s);
+      await answer(s[key] ? '✅' : '❌');
+      return panel.show(ctx, 'admin_features', {}, { push: false });
+    }
+    if (data === 'a:bc') { await answer(); H.setAwait(uid, { type: 'broadcast' }); return editPanel(ctx, t(lang, 'broadcast_ask'), [[R(t(lang, 'cancel'), 'a:panel')]]); }
+    if (data === 'a:banask') { await answer(); H.setAwait(uid, { type: 'ban' }); return editPanel(ctx, t(lang, 'ban_ask'), [[R(t(lang, 'cancel'), 'a:bans')]]); }
+    if (data === 'ach:add') { await answer(); H.setAwait(uid, { type: 'addchannel' }); return editPanel(ctx, t(lang, 'channel_add_ask'), [[R(t(lang, 'cancel'), 'a:chans')]]); }
+    if (data.startsWith('ach:')) {
+      await answer();
+      return panel.show(ctx, 'admin_channel_status', { id: data.slice(4) }, { push: false });
+    }
+    if (data === 'achp:toggle') {
+      const cfg = channel.postPolicy(); cfg.enabled = !cfg.enabled; channel.savePostPolicy(cfg);
+      await answer(cfg.enabled ? '🟢' : '🔴'); return panel.show(ctx, 'admin_channel_status', {}, { push: false });
+    }
+    if (data === 'achp:preview') {
+      const cfg = channel.postPolicy(); cfg.preview = !cfg.preview; channel.savePostPolicy(cfg);
+      await answer(cfg.preview ? '👁' : '🚀'); return panel.show(ctx, 'admin_channel_status', {}, { push: false });
+    }
+    if (data === 'achp:now') {
+      await answer('📣');
+      await channel.drainQueue(ctx.api);
+      return panel.show(ctx, 'admin_channel_status', {}, { push: false });
+    }
+    if (data.startsWith('achd:')) {
+      const id = data.slice(5);
+      channel.saveChannels(channel.channels().filter((c) => String(c.id) !== id));
+      await answer('🗑'); return panel.show(ctx, 'admin_channels', {}, { push: false });
+    }
+    if (data.startsWith('aub:')) {
+      const k = data.slice(4); store.del('bans', k); await answer('✓');
+      return panel.show(ctx, 'admin_bans', {}, { push: false });
+    }
+    if (data === 'a:fjlist') { await answer(); return panel.show(ctx, 'admin_fj'); }
+    if (data === 'a:fjadd') { await answer(); H.setAwait(uid, { type: 'forceedit' }); return editPanel(ctx, '🔒 @username یا آیدی کانال را بفرست:', [[R(t(lang, 'cancel'), 'a:fjlist')]]); }
+    if (data.startsWith('fjdel:')) {
+      const i = Number(data.slice(6));
+      const s = store.get('settings', 'global') || {};
+      const fj = Array.isArray(s.forcejoin) ? s.forcejoin : (s.forcejoin ? [s.forcejoin] : []);
+      fj.splice(i, 1); s.forcejoin = fj; store.set('settings', 'global', s);
+      await answer('🗑'); return panel.show(ctx, 'admin_fj', {}, { push: false });
+    }
+    if (data.startsWith('aset:')) {
+      const key = data.slice(5);
+      const s = store.get('settings', 'global') || {};
+      if (key === 'antispam') s.antispam = !(s.antispam !== false);
+      if (key === 'maintenance') s.maintenance = !s.maintenance;
+      if (key === 'audio_format') s.audio_format = s.audio_format === 'm4a' ? 'mp3' : 'm4a';
+      store.set('settings', 'global', s);
+      await answer('✓'); return panel.show(ctx, 'admin_settings', {}, { push: false });
+    }
+    if (data.startsWith('atk:')) {
+      const tk = store.get('tickets', data.slice(4));
+      if (tk) { H.setAwait(uid, { type: 'posttext', ticket: data.slice(4) }); }
+      await answer(); return;
+    }
+    if (data.startsWith('tk:r:')) {
+      const n = data.slice(5);
+      const tk = store.get('tickets', n);
+      if (tk) { H.setAwait(uid, { type: 'posttext', ticket: n }); await answer(); return ctx.reply('✏️ reply to ticket #' + n); }
+      return answer();
+    }
+    // group settings
+    if (data.startsWith('gs:')) {
+      if (!(await isGroupAdmin(ctx))) return answer(t(lang, 'admin_only'), true);
+      const key = data.slice(3);
+      const s = chatSettings(ctx.chat.id);
+      if (key === 'smart') s.smart = !(s.smart !== false);
+      if (key === 'autodel') s.autodel = s.autodel ? 0 : 5;
+      if (key === 'lang') { return panel.show(ctx, 'lang'); }
+      setChatSettings(ctx.chat.id, s);
+      await answer('✓');
+      return showGroupSettingsEdit(ctx, s);
+    }
+    // channel post actions
+    if (data.startsWith('cp:')) {
+      const [, act, sid] = data.split(':');
+      const pp = store.get('settings', 'pending_posts') || {};
+      const item = pp[sid];
+      if (!item) return answer('expired', true);
+      if (act === 'pub') {
+        await answer(t(lang, 'post_published'));
+        const q = channel.queueList(); q.push({ tr: item.tr, at: Date.now() }); channel.saveQueue(q);
+        delete pp[sid]; store.set('settings', 'pending_posts', pp);
+        return;
+      }
+      if (act === 'rej') { delete pp[sid]; store.set('settings', 'pending_posts', pp); await answer(t(lang, 'post_rejected')); try { await ctx.deleteMessage(); } catch (_) {} return; }
+      if (act === 'edit') { H.setAwait(uid, { type: 'posttext', sid }); await answer(); return ctx.reply('✏️'); }
+      if (act === 'sch') { const q = channel.queueList(); q.push({ tr: item.tr, at: Date.now() + 3600000 }); channel.saveQueue(q); delete pp[sid]; store.set('settings', 'pending_posts', pp); await answer('🕒'); return; }
+    }
+    await answer();
+  } catch (e) {
+    log.error('cb error', e.message);
+    await answer(t(lang, 'error_generic'), true).catch(() => {});
+  }
+});
+
+async function editPanel(ctx, text, rows) {
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb(rows), disable_web_page_preview: true });
+  } catch (_) { await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb(rows) }); }
+}
+async function showGroupSettingsEdit(ctx, s) {
+  const lang = ctx.lang;
+  const onoff = (v) => v ? t(lang, 'on') : t(lang, 'off');
+  const rows = [
+    [B(t(lang, 'gset_smart', { v: onoff(s.smart !== false) }), 'gs:smart')],
+    [B(t(lang, 'gset_autodel', { v: s.autodel ? t(lang, 'minutes_n', { n: s.autodel }) : t(lang, 'disabled') }), 'gs:autodel')],
+    [B(t(lang, 'gset_lang'), 'gs:lang')],
+    [R(t(lang, 'close'), 'nav:close')],
+  ];
+  await editPanel(ctx, t(lang, 'group_settings'), rows);
 }
 
-function json(obj, status = 200) {
-  return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json; charset=utf-8" } });
+async function showNew(ctx) {
+  try {
+    const d = await sc.search('new music 2026', 1, ctx.lang);
+    const items = (d.results || []).slice(0, 16);
+    await panel.show(ctx, 'results', { q: t(ctx.lang, 'new_title'), page: 1, items }, { push: false });
+  } catch (_) { await ctx.reply(t(ctx.lang, 'error_service')); }
 }
+
+// inline instagram music button: resolve -> recognize -> send music to user's PM
+async function inlineInstaMusic(ctx, b64) {
+  const lang = ctx.lang, uid = ctx.from.id;
+  const url = Buffer.from(b64, 'base64url').toString();
+  try { await ctx.answerCallbackQuery({ text: t(lang, 'recognizing') }); } catch (_) {}
+  // Need the user's private chat to send the file. If they never started the bot, deep-link.
+  try {
+    const d = await ig.resolve(ig.cleanUrl(url));
+    const item = (d.items || []).find((i) => i.type === 'video');
+    if (!item) { await ctx.answerCallbackQuery({ text: t(lang, 'recognize_none'), show_alert: true }); return; }
+    const v = item.variants && item.variants[0];
+    const { buf } = await ig.fetchBuffer(d.source_url, { quality: v && v.quality, index: item.index }, 48 * 1024 * 1024);
+    const { decodeMedia } = require('./bot/audio');
+    const pcm = await decodeMedia(buf, { ext: 'mp4', mime: 'video/mp4' });
+    const rec = await sh.recognizeBySignature(pcm, { lyrics: false });
+    if (!rec || !rec.found) { await ctx.api.sendMessage(uid, t(lang, 'recognize_none')); return; }
+    // find downloadable soundcloud match and send
+    const q = `${rec.artist || ''} ${rec.title || ''}`.trim();
+    const s = await sc.search(q, 1, lang);
+    const tr = s.results && s.results[0];
+    if (!tr) { await ctx.api.sendMessage(uid, t(lang, 'no_results')); return; }
+    await H.runDownload({ ...ctx, chat: { id: uid, type: 'private' }, from: ctx.from, lang }, sc.sidOf(tr));
+    await ctx.answerCallbackQuery({ text: '🎧 ' + t(lang, 'sent_pm') }).catch(() => {});
+  } catch (e) {
+    log.warn('inline insta music', e.code || e.message);
+    // fallback: deep-link so user starts bot then gets the song
+    try { await ctx.answerCallbackQuery({ url: `https://t.me/${config.botUsername}?start=ig_${Buffer.from((e.q || '')).toString('base64url')}` }); } catch (_) {}
+  }
+}
+
+// ---------- inline mode: answer only with validated, locally prepared media ----------
+bot.on('inline_query', async (ctx) => {
+  const q = (ctx.inlineQuery.query || '').trim();
+  const base = config.publicUrl;
+  const lang = ctx.lang;
+  const noQueryButton = { text: '▶️ شروع ربات', start_parameter: 'inline' };
+
+  if (!q) {
+    return ctx.answerInlineQuery([{ type: 'article', id: 'hint', title: '🎧 Music', description: 'نام آهنگ، خواننده یا لینک اینستاگرام را بنویس', input_message_content: { message_text: t(lang, 'inline_hint', { bot: config.botUsername }) } }], { cache_time: 30, is_personal: true, button: noQueryButton });
+  }
+  if (ig.isInstaUrl(q)) {
+    try {
+      const d = await ig.resolve(ig.cleanUrl(q));
+      const it = (d.items || []).find((x) => x.type === 'video') || (d.items || [])[0];
+      if (!it) return ctx.answerInlineQuery([], { cache_time: 10 });
+      const v = it.variants.find((x) => it.type === 'video' ? (/video/i.test(x.mime || '') || x.has_audio) : /image/i.test(x.mime || '')) || it.variants[0];
+      if (!v) return ctx.answerInlineQuery([], { cache_time: 10 });
+      const thumb = it.thumbnail || d.thumbnail || v.url;
+      const sel = { quality: v.quality, index: it.index };
+      const mediaUrl = ig.downloadUrlFor(d.source_url, sel);
+      const videoResult = it.type === 'video' ? {
+        type: 'video', id: 'igv' + it.index,
+        video_url: mediaUrl, mime_type: 'video/mp4',
+        thumbnail_url: thumb, title: (d.author && d.author.username) || 'Instagram',
+        caption: '📸 Instagram',
+        reply_markup: kb([[G('🎵 تشخیص و دریافت موزیک', 'igi:' + Buffer.from(q).toString('base64url').slice(0, 50))]]),
+      } : {
+        type: 'photo', id: 'igp' + it.index,
+        photo_url: mediaUrl, thumbnail_url: thumb,
+        title: 'Instagram',
+        reply_markup: kb([[B('🎵 جستجوی موزیک', 'igm:' + Buffer.from(guessCaptionQuery(d)).toString('base64url').slice(0, 48))]]),
+      };
+      return ctx.answerInlineQuery([videoResult], { cache_time: 30, is_personal: true, button: noQueryButton });
+    } catch (e) { log.warn('inline instagram', e.code || 'resolve'); return ctx.answerInlineQuery([], { cache_time: 5 }); }
+  }
+
+  if (q.length < 2) return ctx.answerInlineQuery([], { cache_time: 30, button: noQueryButton });
+  try {
+    const d = await sc.search(q, 1, lang);
+    const tracks = (d.results || []).filter((tr) => sc.isPlayable(tr)).slice(0, 8);
+    const results = [];
+    for (const [i, tr] of tracks.entries()) {
+      const sid = sc.sidOf(tr), meta = cleanTrackMeta(tr), cachedKey = `${sid}|${meta.artist}|${meta.title}|cleanTrackMeta-v2`;
+      const cached = store.get('file_id_cache', cachedKey);
+      if (cached && cached.file_id && cached.validated && cached.artist === meta.artist && cached.title === meta.title) {
+        results.push({ type: 'audio', id: 'c' + sid, audio_file_id: cached.file_id, title: meta.title, performer: meta.artist, caption: `🎵 ${esc(meta.artist)} — ${esc(meta.title)}` });
+        continue;
+      }
+      // thin stream proxy: serves worker bytes as audio/mpeg, no disk.
+      const token = signMedia('a', String(sid), 1800);
+      const dur = Math.round((tr.duration_ms || 0) / 1000) || undefined;
+      results.push({ type: 'audio', id: 'a' + sid + '_' + i, audio_url: `${base}/m/${encodeURIComponent(token)}.mp3`, title: meta.title || 'Music', performer: meta.artist || '', audio_duration: dur, caption: `🎵 ${esc(meta.artist)} — ${esc(meta.title)}` });
+    }
+    if (!results.length) return ctx.answerInlineQuery([], { cache_time: 10, is_personal: true, button: noQueryButton });
+    return ctx.answerInlineQuery(results.slice(0, 8), { cache_time: 30, is_personal: true, button: noQueryButton });
+  } catch (e) { log.warn('inline search', e.code || 'service'); return ctx.answerInlineQuery([], { cache_time: 5 }); }
+});
+
+// Track which inline result the user picked: stats + a small learned boost so
+// the chosen track surfaces first next time (and a file_id cache warms).
+bot.on('chosen_inline_result', async (ctx) => {
+  try {
+    const r = ctx.chosenInlineResult;
+    const id = r && r.result_id || '';
+    store.incrStats('inline_pick');
+    const m = id.match(/^[ac](\d+)/);
+    if (m) {
+      const learning = store.get('settings', 'search_learning') || {};
+      const k = 'inline:' + normalize(r.query || '');
+      learning[k] = { sid: m[1], at: Date.now(), count: ((learning[k] && learning[k].count) || 0) + 1 };
+      store.set('settings', 'search_learning', learning);
+    }
+  } catch (_) {}
+});
+
+function guessCaptionQuery(d) {
+  const caption = String(d.caption || '').split('\n')[0].trim();
+  const m = caption.match(/([\p{L} .'-]+)\s*[-–—|]\s*([\p{L} .'-]+)/u);
+  return m ? `${m[1]} ${m[2]}` : caption.slice(0, 64);
+}
+
+// ── signed media proxy (/m/ = audio, /v/ = insta video) ────────────────────
+const cryptoMod = require('node:crypto');
+function signMedia(kind, id, ttl = 3600) {
+  const exp = Math.floor(Date.now() / 1000) + ttl;
+  const payload = `${kind}.${id}.${exp}`;
+  const sig = cryptoMod.createHmac('sha256', config.inlineSignSecret).update(payload).digest('base64url');
+  return `${id}.${exp}.${sig}`;
+}
+function verifyMedia(kind, token) {
+  const parts = token.split('.');
+  if (parts.length < 3) return null;
+  const sig = parts.pop(), exp = parts.pop(), id = parts.join('.');
+  if (Date.now() / 1000 > Number(exp)) return null;
+  const expect = cryptoMod.createHmac('sha256', config.inlineSignSecret).update(`${kind}.${id}.${exp}`).digest('base64url');
+  return cryptoMod.timingSafeEqual(Buffer.from(sig), Buffer.from(expect)) ? { id } : null;
+}
+
+// Thin streaming proxy for inline mode. Fetches the upstream worker media and
+// pipes it straight to the response — NO disk. id encodes a SoundCloud sid for
+// audio, or a base64url upstream URL for video.
+async function serveSignedMedia(req, res, urlPath) {
+  const started = Date.now();
+  const kind = urlPath.startsWith('/m/') ? 'a' : 'v';
+  const token = decodeURIComponent(urlPath.slice(3)).replace(/\.(mp3|m4a|mp4)$/, '');
+  const signed = verifyMedia(kind, token);
+  if (!signed) { res.writeHead(403); return res.end(); }
+
+  if (kind === 'a') {
+    if (req.method === 'HEAD') { res.writeHead(200, { 'content-type': 'audio/mpeg' }); return res.end(); }
+    try {
+      const { buf } = await sc.fetchTrackBuffer(signed.id, { maxBytes: 48 * 1024 * 1024 });
+      res.writeHead(200, {
+        'content-type': 'audio/mpeg',
+        'content-length': String(buf.length),
+        'cache-control': 'public, max-age=600',
+        'content-disposition': 'inline',
+      });
+      log.info('inline media', { kind, bytes: buf.length, total_ms: Date.now() - started });
+      res.end(buf);
+    } catch (e) {
+      log.warn('inline audio upstream', e.code || e.message);
+      if (!res.headersSent) res.writeHead(502);
+      res.end();
+    }
+    return;
+  }
+
+  // video: id is a base64url-encoded upstream worker URL
+  let upstream;
+  try { upstream = Buffer.from(signed.id, 'base64url').toString(); }
+  catch (_) { res.writeHead(400); return res.end(); }
+  if (req.method === 'HEAD') { res.writeHead(200, { 'content-type': 'video/mp4' }); return res.end(); }
+  try {
+    const { request } = require('./core/http');
+    const up = await request(upstream, { timeout: 90000, retries: 1, maxBytes: 48 * 1024 * 1024 });
+    if (up.status >= 400) { res.writeHead(502); return res.end(); }
+    res.writeHead(200, {
+      'content-type': 'video/mp4',
+      'content-length': String(up.body.length),
+      'cache-control': 'public, max-age=600',
+      'content-disposition': 'inline',
+    });
+    res.end(up.body);
+  } catch (e) {
+    log.warn('inline video upstream', e.code || e.message);
+    if (!res.headersSent) res.writeHead(502);
+    res.end();
+  }
+}
+
+// ---------- error ----------
+bot.catch((err) => log.error('bot error', err.message));
+
+// ---------- HTTP server (webhook + health + cron) ----------
+function makeServer() {
+  const queues = new Map();
+  let active = 0;
+  const MAX_ACTIVE = 32;
+  const MAX_BODY = 1024 * 1024;
+  function enqueue(update) {
+    const chatId = String(update.message && update.message.chat && update.message.chat.id
+      || update.callback_query && update.callback_query.message && update.callback_query.message.chat && update.callback_query.message.chat.id
+      || update.inline_query && update.inline_query.from && update.inline_query.from.id
+      || update.from && update.from.id || 'global');
+    const prev = queues.get(chatId) || Promise.resolve();
+    const job = prev.catch(() => {}).then(async () => {
+      while (active >= MAX_ACTIVE) await new Promise((r) => setTimeout(r, 10));
+      active++;
+      try { log.debug('handleUpdate ' + update.update_id); await bot.handleUpdate(update); log.debug('done ' + update.update_id); }
+      catch (e) { log.error('update processing failed', e.message); }
+      finally { active--; }
+    });
+    queues.set(chatId, job);
+    job.finally(() => { if (queues.get(chatId) === job) queues.delete(chatId); });
+  }
+  return http.createServer((req, res) => {
+    const url = req.url.split('?')[0];
+    const reply = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+    if (req.method === 'GET' && url === '/health') return reply(200, { ok: true, uptime: process.uptime(), rss: process.memoryUsage().rss });
+    if (req.method === 'GET' && url === '/diag/' + config.cronSecret) {
+      return reply(200, { lastUpdateSeen, lastDrop, uptime: process.uptime() });
+    }
+    if (req.method === 'GET' && url === '/cron/' + config.cronSecret) {
+      reply(200, { ok: true });
+      setImmediate(() => channel.cronTick(bot.api).catch((e) => log.error('cron', e.message)));
+      return;
+    }
+    // ── signed media proxies for inline mode ───────────────────────────────
+    if (url.startsWith('/m/') || url.startsWith('/v/')) {
+      return serveSignedMedia(req, res, url).catch(() => { if (!res.headersSent) reply(502, { ok: false }); });
+    }
+    if (req.method !== 'POST' || url !== config.webhookPath) return reply(404, { ok: false });
+    if (req.headers['x-telegram-bot-api-secret-token'] !== config.webhookSecret) return reply(403, { ok: false });
+    const t0 = Date.now();
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY) { req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      if (size > MAX_BODY) return reply(413, { ok: false });
+      let update;
+      try { update = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+      catch (_) { return reply(400, { ok: false }); }
+      reply(200, { ok: true });
+      perf.record('ack', Date.now() - t0);
+      setImmediate(() => enqueue(update));
+    });
+    req.on('error', () => { if (!res.headersSent) reply(400, { ok: false }); });
+  });
+}
+
+process.on('uncaughtException', (e) => log.error('uncaughtException', e.message));
+process.on('unhandledRejection', (e) => log.error('unhandledRejection', (e && e.message) || String(e)));
+
+async function main() {
+  const polling = process.argv.includes('--polling') || !config.publicUrl;
+  log.info('Music bot starting', { polling, worker: config.isWorker });
+  if (polling) {
+    await bot.api.deleteWebhook({});
+    bot.start({ drop_pending_updates: true });
+    log.info('polling started');
+  } else {
+    await bot.init(); // populate botInfo so handleUpdate works without polling
+    const port = config.port || process.env.PORT || 0;
+    const server = makeServer();
+    server.listen(port, () => log.info('http listening', { port: server.address().port }));
+    config._server = server;
+    // In-app periodic tasks as a fallback for environments where the OS cron
+    // cannot be installed (also invoked externally via /cron/<secret>).
+    const tick = () => channel.cronTick(bot.api).catch((e) => log.error('cron tick', e.message));
+    config._cronTimer = setInterval(tick, 5 * 60 * 1000);
+    config._eldTimer = setInterval(() => perf.checkLoop(log), 30000);
+    config._eldTimer.unref && config._eldTimer.unref();
+
+    // watchdog: verify webhook health every 5min; re-set on error/wrong URL,
+    // alert owner (rate-limited). Also run a startup self-test.
+    let lastWdAlert = 0;
+    const watchdog = async () => {
+      try {
+        const info = await bot.api.getWebhookInfo();
+        const want = `${config.publicUrl}${config.webhookPath}`;
+        const bad = info.url !== want || info.last_error_message;
+        if (bad) {
+          await bot.api.setWebhook(want, { secret_token: config.webhookSecret, allowed_updates: ['message', 'edited_message', 'callback_query', 'inline_query', 'chosen_inline_result', 'my_chat_member', 'chat_member'], max_connections: 40 });
+          if (Date.now() - lastWdAlert > 3600000) {
+            lastWdAlert = Date.now();
+            await bot.api.sendMessage(config.ownerId, `🛰 webhook اصلاح شد${info.last_error_message ? ' · خطا: ' + String(info.last_error_message).slice(0, 80) : ''}`).catch(() => {});
+          }
+        }
+      } catch (e) { log.warn('watchdog', e.message); }
+    };
+    config._wdTimer = setInterval(() => watchdog().catch(() => {}), 5 * 60 * 1000);
+    config._wdTimer.unref && config._wdTimer.unref();
+    // startup self-test
+    setTimeout(async () => {
+      try {
+        const me = await bot.api.getMe().catch(() => null);
+        const wh = await bot.api.getWebhookInfo().catch(() => null);
+        const sc = require('./services/soundcloud'), ig2 = require('./services/instagram'), sh2 = require('./services/shazam');
+        const [h1, h2, h3] = await Promise.all([sc.health(), ig2.health(), sh2.health()]);
+        log.info('self-test', { me: me && me.username, webhook: wh && wh.url, sc: h1.ok, insta: h2.ok, shazam: h3.ok });
+        if (!h1.ok || !h3.ok) await bot.api.sendMessage(config.ownerId, `⚠️ سرویس در دسترس نیست: ${!h1.ok ? 'soundcloud ' : ''}${!h3.ok ? 'shazam' : ''}`).catch(() => {});
+      } catch (_) {}
+    }, 20000).unref?.();
+    config._cronTimer.unref && config._cronTimer.unref();
+    setTimeout(tick, 30000).unref && setTimeout(tick, 30000).unref();
+  }
+  // graceful shutdown
+  const stop = async (sig) => {
+    log.info('shutdown ' + sig);
+    try { await bot.stop(); } catch (_) {}
+    try { config._cronTimer && clearInterval(config._cronTimer); } catch (_) {}
+    try { config._eldTimer && clearInterval(config._eldTimer); } catch (_) {}
+    try { config._wdTimer && clearInterval(config._wdTimer); } catch (_) {}
+    try { config._server && config._server.close(); } catch (_) {}
+    try { store.close(); } catch (_) {}
+    process.exit(0);
+  };
+  process.on('SIGINT', () => stop('SIGINT'));
+  process.on('SIGTERM', () => stop('SIGTERM'));
+}
+
+if (require.main === module) {
+  main().catch((e) => { log.error('fatal', e.message); process.exit(1); });
+}
+module.exports = { bot, makeServer, main };

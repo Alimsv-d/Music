@@ -1,50 +1,21 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "music-bot",
-  "main": "src/index.js",
-  "compatibility_date": "2026-10-24",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-25",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "observability": { "enabled": true },
-
-  // KV namespace. `id` is intentionally omitted: Wrangler (>= 4.45) auto-
-  // provisions a namespace on `wrangler deploy` and writes the generated id
-  // back here. For `wrangler dev`, a local preview namespace is used
-  // automatically. The GitHub Action also can inject an explicit id if needed.
+  "vars": {
+    "PUBLIC_URL": ""
+  },
   "kv_namespaces": [
     { "binding": "KV" }
   ],
-
-  // Cron: keep webhook healthy + process broadcast jobs.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "music_bot_db" }
+  ],
   "triggers": {
-    "crons": ["*/5 * * * *", "* * * * *"]
-  },
-
-  "vars": {
-    // Public, non-secret configuration. Real secrets go via `wrangler secret`.
-    "OWNER_ID": "8437014959",
-    "OWNER_USERNAME": "AliMsvD",
-    "CREATOR_NAME": "Ali Mousavi",
-    "BOT_NAME": "Music",
-
-    // Public standalone service workers. These are the stable shared APIs used
-    // by default; leave the bundled /svc/* routes available as a fallback.
-    "SOUNDCLOUD_API_URL": "https://soundcloud-worker.alighost5920.workers.dev",
-    "SHAZAM_API_URL": "https://shazam-worker.alighost5920.workers.dev",
-    "INSTA_API_URL": "https://insta-worker.alighost5920.workers.dev",
-    "LRCLIB_API_URL": "https://lrclib.net",
-
-    // Behaviour defaults (can be overridden live from the owner panel; those
-    // writes land in KV under cfg:* and take precedence over these vars).
-    "DEFAULT_LANG": "fa",
-    "PAGE_SIZE": "10",
-    "MAX_UPLOAD_MB": "50",
-    "TELEGRAM_FILE_LIMIT_MB": "20",
-    "RATE_LIMIT_PER_MIN": "20",
-    "RATE_LIMIT_HEAVY_PER_MIN": "5",
-    "SEARCH_CACHE_TTL": "300",
-    "TRACK_CACHE_TTL": "3600",
-    "RESULT_TTL": "3600",
-    "API_TIMEOUT_MS": "10000"
+    "crons": ["*/5 * * * *"]
   }
 }

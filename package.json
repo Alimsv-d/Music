@@ -1,38 +1,19 @@
 {
   "name": "music-bot",
   "version": "1.0.0",
-  "description": "Always-on Telegram music bot on Cloudflare Workers — search, recognize, download, inline mode. By Ali Mousavi (@AliMsvD).",
-  "type": "module",
   "private": true,
-  "cloudflare": {
-    "bindings": {
-      "BOT_TOKEN": {
-        "type": "secret_text",
-        "description": "Telegram bot token from [@BotFather](https://t.me/BotFather). **Required.**"
-      },
-      "OWNER_ID": {
-        "type": "plain_text",
-        "description": "Your numeric Telegram id (from [@userinfobot](https://t.me/userinfobot)). Required — replace the default only if you are deploying for a different owner."
-      }
-    }
+  "description": "Music — a fast, secure Telegram music bot",
+  "type": "commonjs",
+  "main": "src/worker.js",
+  "engines": {
+    "node": ">=20"
   },
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "node scripts/ensure-kv.mjs && wrangler deploy",
-    "setup": "node scripts/setup.mjs",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "e2e": "node scripts/e2e.mjs",
-    "lint": "node scripts/lint.mjs",
-    "secret-scan": "node scripts/secret-scan.mjs",
-    "live": "node scripts/live-check.mjs"
+    "deploy": "wrangler deploy",
+    "migrate": "wrangler d1 migrations apply music_bot_db --remote"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.8.0",
-    "vitest": "^3.0.0",
     "wrangler": "^4.152.0"
-  },
-  "engines": {
-    "node": ">=18"
   }
 }
