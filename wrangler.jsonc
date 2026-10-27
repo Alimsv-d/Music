@@ -1,16 +1,19 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "music-bot",
+  "name": "music-telegrambot",
   "main": "src/worker.js",
   "compatibility_date": "2026-10-25",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "observability": { "enabled": true },
+  "vars": {
+    "PUBLIC_URL": "https://music-telegrambot.alighost5920.workers.dev"
+  },
   "kv_namespaces": [
-    { "binding": "KV" }
+    { "binding": "KV", "id": "3c288f4a7fa0403fb49e1dddf263f0eb" }
   ],
   "d1_databases": [
-    { "binding": "DB", "database_name": "music_bot_db" }
+    { "binding": "DB", "database_name": "music_bot_db", "database_id": "ba0833b3-4b78-4e2a-b45b-f10d3303131b" }
   ],
   "triggers": {
     "crons": ["*/5 * * * *"]
