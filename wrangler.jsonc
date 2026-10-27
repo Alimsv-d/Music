@@ -22,17 +22,18 @@
 
   "vars": {
     // Public, non-secret configuration. Real secrets go via `wrangler secret`.
-    "OWNER_ID": "8437014959",
-    "OWNER_USERNAME": "AliMsvD",
-    "CREATOR_NAME": "Ali Mousavi",
+    // OWNER_ID is intentionally EMPTY — each Deploy-to-Cloudflare user fills in
+    // their own numeric Telegram id in the deploy form (no personal defaults).
+    "OWNER_ID": "",
+    "OWNER_USERNAME": "",
+    "CREATOR_NAME": "",
     "BOT_NAME": "Music",
 
-    // Backend service base URLs. Leave EMPTY to use the services bundled inside
-    // THIS worker under /svc/<name>/* (self-routing, zero external URLs). To
-    // override with external workers, paste their base URL here instead.
-    "SOUNDCLOUD_API_URL": "",
-    "SHAZAM_API_URL": "",
-    "INSTA_API_URL": "",
+    // Public standalone service workers. These are the stable shared APIs used
+    // by default; leave the bundled /svc/* routes available as a fallback.
+    "SOUNDCLOUD_API_URL": "https://soundcloud-worker.alighost5920.workers.dev",
+    "SHAZAM_API_URL": "https://shazam-worker.alighost5920.workers.dev",
+    "INSTA_API_URL": "https://insta-worker.alighost5920.workers.dev",
     "LEGACY_INSTA_API_URL": "",
     "LRCLIB_API_URL": "https://lrclib.net",
 
@@ -48,6 +49,6 @@
     "TRACK_CACHE_TTL": "3600",
     "RESULT_TTL": "3600",
     "API_TIMEOUT_MS": "10000",
-    "DEFAULT_SUPPORT_URL": "https://t.me/AliMsvD"
+    "DEFAULT_SUPPORT_URL": "",
   }
 }
