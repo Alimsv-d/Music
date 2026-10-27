@@ -154,7 +154,8 @@ async function dlProxy(ctx, path, request) {
   const id = idParts.join(":");
   if (source !== "sc" || !id) return new Response("bad id", { status: 400 });
 
-  const base = ctx.env.SOUNDCLOUD_API_URL.replace(/\/$/, "");
+  const base = (ctx.sc.base || "").replace(/\/$/, "");
+  if (!base) return new Response("soundcloud backend not configured", { status: 503 });
   const candidates = [
     `${base}/api/v1/download?id=${encodeURIComponent(id)}`,
     `${base}/api/v1/stream?id=${encodeURIComponent(id)}`,
@@ -294,9 +295,13 @@ async function cronTick(ctx, event) {
   // 2) webhook watchdog (every 5-min trigger — cheap enough to run each tick).
   try {
     const info = await ctx.tg.getWebhookInfo();
-    const base = ctx.env.PUBLIC_URL || "";
-    const want = `${base.replace(/\/$/, "")}/webhook`;
-    const bad = info.last_error_message || (base && info.url !== want);
+    let base = ctx.env.PUBLIC_URL || "";
+    if (!base) {
+      try { base = (await ctx.store.getCfg("activated"))?.url || ""; } catch {}
+      base = base.replace(/\/webhook\/?$/, "");
+    }
+    const want = base ? `${base.replace(/\/$/, "")}/webhook` : null;
+    const bad = !!info.last_error_message || (want && info.url !== want);
     if (bad) {
       await setupWebhook(ctx);
       const owner = ctx.ownerId;

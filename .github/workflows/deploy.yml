@@ -1,13 +1,20 @@
-# Deploys the Music bot to Cloudflare Workers — one click, no repo secrets.
+# Deploys the Music bot to Cloudflare Workers.
 #
-# Run it: Actions → deploy → Run workflow → fill the inputs → Run.
-# All credentials are typed in the form each time; nothing is stored in the repo.
-# To avoid retyping every deploy, set the same names as repository secrets and
-# they are used as fallbacks for any field left empty.
+# Two ways to run:
+#   1) AUTO — every push to the main branch deploys to Cloudflare, using
+#      repository secrets (no inputs needed). Requires these repo secrets:
+#        CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, BOT_TOKEN,
+#        WEBHOOK_SECRET, LINK_SECRET, ADMIN_SETUP_KEY
+#      Optional: SHAZAM_BACKEND_URL, SHAZAM_BACKEND_KEY, ACTIVATE_BOT ("true"),
+#      and the repo variable PUBLIC_URL.
+#   2) MANUAL — Actions → deploy → Run workflow → fill the inputs → Run.
+#      Any field left empty falls back to the same-named repository secret.
 
 name: deploy
 
 on:
+  push:
+    branches: [main, master, merge-cf-bot]
   workflow_dispatch:
     inputs:
       CLOUDFLARE_API_TOKEN:
@@ -67,6 +74,8 @@ jobs:
       ADMIN_SETUP_KEY: ${{ inputs.ADMIN_SETUP_KEY || secrets.ADMIN_SETUP_KEY }}
       SHAZAM_BACKEND_URL: ${{ inputs.SHAZAM_BACKEND_URL || secrets.SHAZAM_BACKEND_URL }}
       SHAZAM_BACKEND_KEY: ${{ inputs.SHAZAM_BACKEND_KEY || secrets.SHAZAM_BACKEND_KEY }}
+      # Webhook activation: manual checkbox OR the ACTIVATE_BOT secret == "true"
+      ACTIVATE_BOT: ${{ inputs.activate == true || secrets.ACTIVATE_BOT == 'true' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -114,7 +123,9 @@ jobs:
           PUBLIC_URL: ${{ vars.PUBLIC_URL }}
         run: |
           set -e
-          OUT=$(npx wrangler deploy 2>&1)
+          DEPLOY_ARGS=""
+          if [ -n "$PUBLIC_URL" ]; then DEPLOY_ARGS="--var PUBLIC_URL:${PUBLIC_URL%/}"; fi
+          OUT=$(npx wrangler deploy $DEPLOY_ARGS 2>&1)
           echo "$OUT"
           URL="${{ vars.PUBLIC_URL }}"
           if [ -z "$URL" ]; then
@@ -127,7 +138,7 @@ jobs:
           echo "worker_url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: Run /setup (activate Telegram webhook)
-        if: ${{ inputs.activate == true }}
+        if: ${{ env.ACTIVATE_BOT == 'true' }}
         run: |
           URL="${{ steps.deploy.outputs.worker_url }}"
           RESP=$(curl -fsS "${URL}/setup?key=${ADMIN_SETUP_KEY}")
@@ -145,7 +156,7 @@ jobs:
           curl -fsS "${URL}/health" | tee /tmp/health.json
 
       - name: Verify Telegram webhook (only when activated)
-        if: ${{ inputs.activate == true }}
+        if: ${{ env.ACTIVATE_BOT == 'true' }}
         run: |
           URL="${{ steps.deploy.outputs.worker_url }}"
           curl -fsS "${URL}/health" | tee /tmp/health.json
@@ -168,5 +179,5 @@ jobs:
             echo "| Step | Result |"
             echo "|---|---|"
             echo "| deploy | ✅ |"
-            echo "| /setup (webhook) | ${{ inputs.activate && '✅' || 'skipped' }} |"
+            echo "| /setup (webhook) | ${{ env.ACTIVATE_BOT == 'true' && '✅' || 'skipped' }} |"
           } >> "$GITHUB_STEP_SUMMARY"

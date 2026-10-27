@@ -32,7 +32,7 @@ function walk(dir) {
     const p = join(dir, e);
     const st = statSync(p);
     if (st.isDirectory()) walk(p);
-    else if (/\.(js|mjs|cjs|json|jsonc|md|sh|yml|yaml|toml|txt|vars)$/i.test(e) || !e.includes(".")) scan(p);
+    else if (/\.(js|mjs|cjs|json|jsonc|md|sh|yml|yaml|toml|txt|vars|env)$/i.test(e) || e === ".env" || /^\.env(\..*)?$/.test(e) || !e.includes(".")) scan(p);
   }
 }
 walk(process.cwd());

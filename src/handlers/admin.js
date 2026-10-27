@@ -319,7 +319,14 @@ async function selfTest(ctx) {
 }
 
 export async function setupWebhook(ctx) {
-  const base = ctx.env.PUBLIC_URL || "";
+  let base = ctx.env.PUBLIC_URL || "";
+  if (!base) {
+    // Fall back to the URL recorded at activation so cron never builds a
+    // relative "/webhook" that breaks the live webhook.
+    try { base = (await ctx.store.getCfg("activated"))?.url || ""; } catch {}
+    base = base.replace(/\/webhook\/?$/, "");
+  }
+  if (!base) return "webhook skipped: PUBLIC_URL not configured";
   const url = `${base.replace(/\/$/, "")}/webhook`;
   try {
     await ctx.tg.setWebhook(url, {
