@@ -32,7 +32,6 @@
     "SOUNDCLOUD_API_URL": "https://soundcloud-worker.alighost5920.workers.dev",
     "SHAZAM_API_URL": "https://shazam-worker.alighost5920.workers.dev",
     "INSTA_API_URL": "https://insta-worker.alighost5920.workers.dev",
-    "LEGACY_INSTA_API_URL": "",
     "LRCLIB_API_URL": "https://lrclib.net",
 
     // Behaviour defaults (can be overridden live from the owner panel; those

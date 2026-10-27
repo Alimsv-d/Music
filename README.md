@@ -64,7 +64,7 @@ validated progressive file directly.
 | `BOT_TOKEN` | توکن ربات از [@BotFather](https://t.me/BotFather) — **اجباری** |
 | `OWNER_ID` | آیدی عددی پیش‌فرض سازنده (`8437014959`)؛ کاربر برای مالکیت ربات خودش آن را با آیدی خود جایگزین کند — **تنها مقدار متغیر اجباری** |
 
-نام سازنده و username پیش‌فرض **Ali Mousavi / @AliMsvD** هستند و کاربر در صورت نیاز می‌تواند آن‌ها را در فرم Deploy تغییر دهد؛ برای اجرای معمولی نیازی به تغییرشان نیست. آدرس عمومی SoundCloud، Shazam و Instagram، KV، کلیدهای امنیتی، webhook و پایگاه‌داده/ذخیره‌سازی مورد نیاز خودکار تنظیم می‌شوند. `LEGACY_INSTA_API_URL` داخلی است و کاربر نباید آن را پر کند.
+نام سازنده و username پیش‌فرض **Ali Mousavi / @AliMsvD** هستند و کاربر در صورت نیاز می‌تواند آن‌ها را در تنظیمات Worker تغییر دهد؛ برای اجرای معمولی نیازی به تغییرشان نیست. آدرس عمومی SoundCloud، Shazam و Instagram، KV، کلیدهای امنیتی، webhook و پایگاه‌داده/ذخیره‌سازی مورد نیاز خودکار تنظیم می‌شوند. هیچ آدرس سرویس دیگری لازم نیست.
 
 > فیلدهای `WEBHOOK_SECRET`، `LINK_SECRET` و `ADMIN_SETUP_KEY` را **خالی بگذارید** — از `BOT_TOKEN` شما مشتق امن می‌شوند. کاربر باید در Cloudflare وارد شده و مجوز اتصال به GitHub را بدهد.
 
@@ -117,7 +117,6 @@ Copy `.dev.vars.example`, fill `BOT_TOKEN` — the other secrets are optional
 | `LINK_SECRET` | secret (opt) | HMAC-sign `/dl/` proxy URLs — auto-derived when empty |
 | `ADMIN_SETUP_KEY` | secret (opt) | guard `/setup` re-run — auto-derived when empty |
 | `SOUNDCLOUD_API_URL` / `SHAZAM_API_URL` / `INSTA_API_URL` | var | آدرس‌های عمومی آماده به‌صورت پیش‌فرض تنظیم شده‌اند؛ در صورت نیاز قابل جایگزینی‌اند |
-| `LEGACY_INSTA_API_URL` | var (optional) | خالی؛ مسیر داخلی Instagram استفاده می‌شود |
 | `LRCLIB_API_URL` | var | `https://lrclib.net` |
 | `SHAZAM_BACKEND_URL` / `_KEY` | secret (opt) | ffmpeg backend for OGG/video recognition |
 | `TELEGRAM_API_BASE` | var (opt) | override for e2e tests |
