@@ -12,7 +12,7 @@
       },
       "OWNER_ID": {
         "type": "plain_text",
-        "description": "Your numeric Telegram id (from [@userinfobot](https://t.me/userinfobot)). Required — enter your own id to own `/panel`."
+        "description": "Your numeric Telegram id (from [@userinfobot](https://t.me/userinfobot)). Required — replace the default only if you are deploying for a different owner."
       }
     }
   },

@@ -57,14 +57,14 @@ validated progressive file directly.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Alimsv-d/Music)
 
-با فشردن دکمه، Cloudflare یک کپی از مخزن در حساب شما می‌سازد، Worker و KV را به‌صورت خودکار راه‌اندازی و Deploy می‌کند. **فقط دو مقدار را وارد کنید؛ هر دو در فرم Deploy خالی هستند و اطلاعات شخصی صاحب مخزن در آن‌ها قرار ندارد:**
+با فشردن دکمه، Cloudflare یک کپی از مخزن در حساب کاربر می‌سازد، Worker و KV را به‌صورت خودکار راه‌اندازی و Deploy می‌کند. **فقط `BOT_TOKEN` و `OWNER_ID` لازم‌اند:**
 
 | فیلد | از کجا؟ |
 |---|---|
-| `BOT_TOKEN` | توکن ربات از [@BotFather](https://t.me/BotFather) |
-| `OWNER_ID` | **اجباری و خالی** — آیدی عددی تلگرام خود کاربر از [@userinfobot](https://t.me/userinfobot) |
+| `BOT_TOKEN` | توکن ربات از [@BotFather](https://t.me/BotFather) — **اجباری** |
+| `OWNER_ID` | آیدی عددی پیش‌فرض سازنده (`8437014959`)؛ کاربر برای مالکیت ربات خودش آن را با آیدی خود جایگزین کند — **تنها مقدار متغیر اجباری** |
 
-هر چیز دیگر خودکار است: KV namespace ساخته و bind می‌شود، آدرس عمومی و پایدار سرویس‌های آمادهٔ **SoundCloud، Shazam و Instagram** به‌صورت پیش‌فرض تنظیم است و webhook تلگرام به‌خودی‌خودی ثبت می‌شود — با اولین درخواست به Worker یا اولین پیام به ربات، `/setup` خودکار اجرا می‌شود. اگر این سرویس‌های عمومی موقتاً در دسترس نباشند، نسخه‌های داخلی همین مخزن به‌عنوان fallback وجود دارند.
+نام سازنده و username پیش‌فرض **Ali Mousavi / @AliMsvD** هستند و کاربر در صورت نیاز می‌تواند آن‌ها را در فرم Deploy تغییر دهد؛ برای اجرای معمولی نیازی به تغییرشان نیست. آدرس عمومی SoundCloud، Shazam و Instagram، KV، کلیدهای امنیتی، webhook و پایگاه‌داده/ذخیره‌سازی مورد نیاز خودکار تنظیم می‌شوند. `LEGACY_INSTA_API_URL` داخلی است و کاربر نباید آن را پر کند.
 
 > فیلدهای `WEBHOOK_SECRET`، `LINK_SECRET` و `ADMIN_SETUP_KEY` را **خالی بگذارید** — از `BOT_TOKEN` شما مشتق امن می‌شوند. کاربر باید در Cloudflare وارد شده و مجوز اتصال به GitHub را بدهد.
 
@@ -111,8 +111,9 @@ Copy `.dev.vars.example`, fill `BOT_TOKEN` — the other secrets are optional
 | Name | Kind | Purpose |
 |---|---|---|
 | `BOT_TOKEN` | secret | Telegram token — **the only required secret** |
-| `OWNER_ID` | var | owner numeric id — **خالی و اجباری برای هر کاربر** |
-| `WEBHOOK_SECRET` | secret (opt) | webhook verification — **auto-derived from `BOT_TOKEN` when empty** |
+| `OWNER_ID` | var | owner numeric id — default is the author; replace it only when deploying for another owner |
+| `OWNER_USERNAME` / `CREATOR_NAME` | var | default `AliMsvD` / `Ali Mousavi`; optional customization |
+| `WEBHOOK_SECRET` | secret (opt) | auto-derived when empty |
 | `LINK_SECRET` | secret (opt) | HMAC-sign `/dl/` proxy URLs — auto-derived when empty |
 | `ADMIN_SETUP_KEY` | secret (opt) | guard `/setup` re-run — auto-derived when empty |
 | `SOUNDCLOUD_API_URL` / `SHAZAM_API_URL` / `INSTA_API_URL` | var | آدرس‌های عمومی آماده به‌صورت پیش‌فرض تنظیم شده‌اند؛ در صورت نیاز قابل جایگزینی‌اند |
