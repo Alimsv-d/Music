@@ -8,19 +8,23 @@
     "bindings": {
       "BOT_TOKEN": {
         "type": "secret_text",
-        "description": "Telegram bot token from [@BotFather](https://t.me/BotFather)."
+        "description": "Telegram bot token from [@BotFather](https://t.me/BotFather). **Required.**"
+      },
+      "OWNER_ID": {
+        "type": "plain_text",
+        "description": "Your numeric Telegram user id (from [@userinfobot](https://t.me/userinfobot)). Gets full owner access to `/panel`. Default is the author's."
       },
       "WEBHOOK_SECRET": {
         "type": "secret_text",
-        "description": "Random secret for Telegram webhook verification. Generate with `openssl rand -hex 32`."
+        "description": "Optional — auto-generated from BOT_TOKEN if left empty."
       },
       "LINK_SECRET": {
         "type": "secret_text",
-        "description": "Random secret for signing download links. Generate with `openssl rand -hex 32`."
+        "description": "Optional — auto-generated from BOT_TOKEN if left empty."
       },
       "ADMIN_SETUP_KEY": {
         "type": "secret_text",
-        "description": "Random key for the one-time `/setup` route. Generate with `openssl rand -hex 16`."
+        "description": "Optional — auto-generated from BOT_TOKEN if left empty."
       }
     }
   },

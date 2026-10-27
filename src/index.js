@@ -11,6 +11,7 @@
 import { Ctx } from "./ctx.js";
 import { verifyLink } from "./utils/crypto.js";
 import { timingSafeEqualStr } from "./utils/crypto.js";
+import { secret } from "./utils/secrets.js";
 import { handleMessage } from "./handlers/message.js";
 import { handleCallback } from "./handlers/callback.js";
 import { handleInlineQuery, handleChosenInline } from "./handlers/inline.js";
@@ -59,6 +60,22 @@ export default {
         }
       }
 
+      // First-request auto-activation: after a Deploy-to-Cloudflare install the
+      // very first hit on the worker (or any user message) registers the webhook
+      // in the background — no manual /setup needed. Skipped while running
+      // locally (127.x) so `wrangler dev` never hijacks a live webhook.
+      if (env.BOT_TOKEN && !url.hostname.startsWith("127.") && url.hostname !== "localhost") {
+        exec.waitUntil(
+          (async () => {
+            try {
+              if (!(await ctx.store.getCfg("activated"))) {
+                await runSetup(request, env, ctx, url);
+              }
+            } catch {}
+          })()
+        );
+      }
+
       if (path === "/" || path === "") return statusPage(request, env);
       if (path === "/health") return healthCheck(ctx);
       if (path === "/setup") return setupRoute(request, env, ctx, url);
@@ -81,8 +98,9 @@ export default {
 // ── webhook ───────────────────────────────────────────────────────────────────
 async function webhook(request, env, exec, ctx) {
   // Verify Telegram's secret header.
-  const secret = request.headers.get("x-telegram-bot-api-secret-token") || "";
-  if (!env.WEBHOOK_SECRET || !timingSafeEqualStr(secret, env.WEBHOOK_SECRET)) {
+  const token = request.headers.get("x-telegram-bot-api-secret-token") || "";
+  const expected = await secret(env, "WEBHOOK_SECRET");
+  if (!expected || !timingSafeEqualStr(token, expected)) {
     return new Response("forbidden", { status: 403 });
   }
 
@@ -129,7 +147,7 @@ async function processUpdate(ctx, update) {
 // so Telegram can fetch it for InlineQueryResultAudio. Signed to prevent abuse.
 async function dlProxy(ctx, path, request) {
   const token = decodeURIComponent(path.slice("/dl/".length)).replace(/\.mp3$/, "");
-  const v = await verifyLink(ctx.env.LINK_SECRET, token);
+  const v = await verifyLink(await secret(ctx.env, "LINK_SECRET"), token);
   if (!v.ok) return new Response("forbidden", { status: 403 });
 
   const [source, ...idParts] = v.id.split(":");
@@ -168,11 +186,20 @@ async function dlProxy(ctx, path, request) {
 }
 
 // ── /setup ────────────────────────────────────────────────────────────────────
+// Idempotent. If the bot was never activated, calling /setup with NO key (or a
+// matching key) runs it once — that's how Deploy-to-Cloudflare users go live
+// with just BOT_TOKEN + OWNER_ID. After activation only the key opens it.
 async function setupRoute(request, env, ctx, url) {
   const key = url.searchParams.get("key") || "";
-  if (!env.ADMIN_SETUP_KEY || !timingSafeEqualStr(key, env.ADMIN_SETUP_KEY)) {
+  const already = await ctx.store.getCfg("activated");
+  const adminKey = await secret(env, "ADMIN_SETUP_KEY");
+  if (already && (!adminKey || !timingSafeEqualStr(key, adminKey))) {
     return json({ ok: false, error: "forbidden" }, 403);
   }
+  return runSetup(request, env, ctx, url);
+}
+
+async function runSetup(request, env, ctx, url) {
   const report = { ok: true, steps: {} };
   const expectedBase = env.PUBLIC_URL || url.origin;
   const expectedWebhook = `${expectedBase}/webhook`;
@@ -180,7 +207,7 @@ async function setupRoute(request, env, ctx, url) {
 
   try {
     await ctx.tg.setWebhook(expectedWebhook, {
-      secret_token: env.WEBHOOK_SECRET,
+      secret_token: await secret(env, "WEBHOOK_SECRET"),
       allowed_updates: ["message", "edited_message", "callback_query", "inline_query", "chosen_inline_result", "my_chat_member", "chat_member"],
       drop_pending_updates: true,
       max_connections: 40,
@@ -221,6 +248,7 @@ async function setupRoute(request, env, ctx, url) {
     report.ok = false;
     report.steps.webhook_info = e.message;
   }
+  if (report.ok) await ctx.store.setCfg("activated", { at: Date.now(), url: expectedWebhook });
   return json(report, report.ok ? 200 : 500);
 }
 

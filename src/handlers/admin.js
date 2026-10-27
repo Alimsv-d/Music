@@ -3,6 +3,7 @@
 
 import { t } from "../i18n/index.js";
 import { esc } from "../utils/text.js";
+import { secret } from "../utils/secrets.js";
 import {
   panelMenu, joinChannelList, adminList, settingsMenu, toolsMenu, banMenu,
   broadcastTargets, kb, btn,
@@ -322,7 +323,7 @@ export async function setupWebhook(ctx) {
   const url = `${base.replace(/\/$/, "")}/webhook`;
   try {
     await ctx.tg.setWebhook(url, {
-      secret_token: ctx.env.WEBHOOK_SECRET,
+      secret_token: await secret(ctx.env, "WEBHOOK_SECRET"),
       allowed_updates: ["message", "edited_message", "callback_query", "inline_query", "chosen_inline_result", "my_chat_member", "chat_member"],
       drop_pending_updates: true,
       max_connections: 40,

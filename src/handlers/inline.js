@@ -4,6 +4,7 @@
 
 import { t } from "../i18n/index.js";
 import { signLink } from "../utils/crypto.js";
+import { secret } from "../utils/secrets.js";
 import { fmtDuration } from "../utils/text.js";
 
 const PAGE = 20;
@@ -65,7 +66,7 @@ export async function handleInlineQuery(ctx, iq) {
       continue;
     }
     if (!tr.downloadUrl) continue;
-    const signed = await signLink(ctx.env.LINK_SECRET, `sc:${tr.id}`, 3600);
+    const signed = await signLink(await secret(ctx.env, "LINK_SECRET"), `sc:${tr.id}`, 3600);
     results.push({
       type: "audio",
       id: `s${tr.id}`,

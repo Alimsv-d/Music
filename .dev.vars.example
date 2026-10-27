@@ -2,15 +2,12 @@
 # REQUIRED. Get it from @BotFather. Never commit the real value.
 BOT_TOKEN=1234567890:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# Random string used to verify Telegram's X-Telegram-Bot-Api-Secret-Token header.
-# Generate: openssl rand -hex 32
-WEBHOOK_SECRET=change-me-random-64-hex
-
-# HMAC secret for signing /dl/ inline-audio proxy links.
-LINK_SECRET=change-me-random-64-hex
-
-# Guards the GET /setup bootstrap route.
-ADMIN_SETUP_KEY=change-me-random-32-hex
+# OPTIONAL — leave unset to auto-derive each from BOT_TOKEN+OWNER_ID (same
+# derivation the Deploy Button relies on). Set explicit values only if you
+# need to rotate them independently.
+# WEBHOOK_SECRET=
+# LINK_SECRET=
+# ADMIN_SETUP_KEY=
 
 # ── Optional overrides ──────────────────────────────────────────────────────
 # Override Telegram API base (used by the e2e test to intercept calls).

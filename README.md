@@ -53,21 +53,26 @@ validated progressive file directly.
 
 ---
 
-## 🚀 استقرار روی Cloudflare Workers با یک کلیک
+## 🚀 استقرار روی Cloudflare با یک کلیک
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Alimsv-d/Music)
 
-با فشردن دکمه، Cloudflare مخزن عمومی را وارد فرایند راه‌اندازی می‌کند، Worker و KV را می‌سازد و مقادیر محرمانه را از شما می‌خواهد. مقادیر پیش‌فرض و توضیحات در فرم Deploy مشخص می‌کنند چه چیزی باید وارد شود. حداقل لازم: توکن ربات تلگرام (`BOT_TOKEN`) و شناسه عددی مالک (`OWNER_ID`). برای فعال‌شدن ربات و انتقال webhook، `WEBHOOK_SECRET`، `LINK_SECRET` و `ADMIN_SETUP_KEY` هم لازم‌اند. Cloudflare API Token و Account ID را در حساب Cloudflare خود انتخاب/تأیید می‌کنید؛ این مقادیر به مخزن اضافه نمی‌شوند.
+با فشردن دکمه، Cloudflare یک کپی از مخزن در حساب شما می‌سازد، Worker و KV را به‌صورت خودکار راه‌اندازی و Deploy می‌کند. **فقط دو مقدار را وارد کنید:**
 
-پس از Deploy، یک‌بار مسیر `/setup?key=<ADMIN_SETUP_KEY>` را روی آدرس Worker اجرا کنید تا webhook تلگرام ثبت شود. برای استفاده از سرویس‌های داخلی SoundCloud، Shazam و Instagram تنظیم URL اضافی لازم نیست. شناسه مالک پیش‌فرض در `wrangler.jsonc` قرار دارد و اگر بات برای شماست آن را به شناسه عددی Telegram خود تغییر دهید.
+| فیلد | از کجا؟ |
+|---|---|
+| `BOT_TOKEN` | توکن ربات از [@BotFather](https://t.me/BotFather) |
+| `OWNER_ID` | آیدی عددی تلگرام شما از [@userinfobot](https://t.me/userinfobot) |
 
-> Deploy Button رسمی Cloudflare برای مخزن عمومی کار می‌کند. کاربر باید در Cloudflare وارد شده باشد و مجوز اتصال به GitHub و ایجاد Worker/KV را بدهد. secretها را فقط در فرم Cloudflare وارد کنید، نه در فایل‌های مخزن.
+هر چیز دیگر خودکار است: KV namespace ساخته و bind می‌شود، سرویس‌های SoundCloud / Shazam / Instagram داخل همین یک Worker اجرا می‌شوند و **webhook تلگرام به‌خودی‌خودی ثبت می‌شود** — با اولین درخواست به Worker یا اولین پیام به ربات، `/setup` خودکار اجرا می‌شود.
 
-### استقرار از طریق GitHub Actions (گزینه جایگزین)
+> فیلدهای `WEBHOOK_SECRET`، `LINK_SECRET` و `ADMIN_SETUP_KEY` را **خالی بگذارید** — از `BOT_TOKEN` شما مشتق امن می‌شوند. کاربر باید در Cloudflare وارد شده و مجوز اتصال به GitHub را بدهد.
 
-اگر نمی‌خواهید از دکمه بالا استفاده کنید، مسیر Actions نیز موجود است:
+**اگر Deploy Button را fork نمی‌خواهید:** می‌توانید مستقیم با Wrangler هم مستقر کنید (`npm run deploy`) و بعد فقط `/setup` را بدون کلید باز کنید — اولین بار فعال‌سازی انجام می‌شود و بعد قفل می‌شود.
 
-Repo → **Actions → deploy → Run workflow** و فیلدهای Cloudflare و Telegram را پر کنید. برای جزییات ورودی‌ها و تنظیم webhook، workflow در `.github/workflows/deploy.yml` را ببینید.
+### استقرار از طریق GitHub Actions (جایگزین)
+
+Repo → **Actions → deploy → Run workflow**. جزییات ورودی‌ها در `.github/workflows/deploy.yml`.
 
 ### 4 — BotFather checklist (one-time, required)
 ```
@@ -90,14 +95,14 @@ cd Music
 ./scripts/bootstrap.sh          # checks node, installs, .dev.vars, tests, gh secrets
 # then either:
 npm run deploy                  # wrangler login + creates KV + deploys
-curl "<worker>/setup?key=<ADMIN_SETUP_KEY>"   # register webhook
+curl "<worker>/setup"           # first call activates webhook (locks afterwards)
 ```
 
 `bootstrap.sh` also sets GitHub secrets for you if `gh` is authenticated.
 
 ### `.dev.vars` (local secrets — gitignored)
-Copy `.dev.vars.example`, fill `BOT_TOKEN` and the three generated secrets.
-Never commit it.
+Copy `.dev.vars.example`, fill `BOT_TOKEN` — the other secrets are optional
+(auto-derived from `BOT_TOKEN`). Never commit it.
 
 ---
 
@@ -105,11 +110,11 @@ Never commit it.
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `BOT_TOKEN` | secret | Telegram token |
-| `WEBHOOK_SECRET` | secret | verify `X-Telegram-Bot-Api-Secret-Token` |
-| `LINK_SECRET` | secret | HMAC-sign `/dl/` proxy URLs |
-| `ADMIN_SETUP_KEY` | secret | guard `/setup` |
-| `OWNER_ID` | var | owner numeric id (`8437014959`) |
+| `BOT_TOKEN` | secret | Telegram token — **the only required secret** |
+| `OWNER_ID` | var | owner numeric id (`8437014959`) — set to your own id |
+| `WEBHOOK_SECRET` | secret (opt) | webhook verification — **auto-derived from `BOT_TOKEN` when empty** |
+| `LINK_SECRET` | secret (opt) | HMAC-sign `/dl/` proxy URLs — auto-derived when empty |
+| `ADMIN_SETUP_KEY` | secret (opt) | guard `/setup` re-run — auto-derived when empty |
 | `SOUNDCLOUD_API_URL` / `SHAZAM_API_URL` / `INSTA_API_URL` | var (optional) | Leave empty for the bundled in-worker services; set only to override with external workers |
 | `LEGACY_INSTA_API_URL` | var (optional) | Optional legacy Instagram fallback; empty uses bundled Instagram routes |
 | `LRCLIB_API_URL` | var | `https://lrclib.net` |
