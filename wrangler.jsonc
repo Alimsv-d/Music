@@ -45,7 +45,6 @@
     "SEARCH_CACHE_TTL": "300",
     "TRACK_CACHE_TTL": "3600",
     "RESULT_TTL": "3600",
-    "API_TIMEOUT_MS": "10000",
-    "DEFAULT_SUPPORT_URL": "",
+    "API_TIMEOUT_MS": "10000"
   }
 }

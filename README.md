@@ -112,11 +112,11 @@ Copy `.dev.vars.example`, fill `BOT_TOKEN` — the other secrets are optional
 |---|---|---|
 | `BOT_TOKEN` | secret | Telegram token — **the only required secret** |
 | `OWNER_ID` | var | owner numeric id — default is the author; replace it only when deploying for another owner |
-| `OWNER_USERNAME` / `CREATOR_NAME` | var | default `AliMsvD` / `Ali Mousavi`; optional customization |
+| `OWNER_USERNAME` / `CREATOR_NAME` | var | پیش‌فرض `AliMsvD` / `Ali Mousavi`؛ کاربر نیازی به تغییر آن‌ها ندارد |
 | `WEBHOOK_SECRET` | secret (opt) | auto-derived when empty |
 | `LINK_SECRET` | secret (opt) | HMAC-sign `/dl/` proxy URLs — auto-derived when empty |
 | `ADMIN_SETUP_KEY` | secret (opt) | guard `/setup` re-run — auto-derived when empty |
-| `SOUNDCLOUD_API_URL` / `SHAZAM_API_URL` / `INSTA_API_URL` | var | آدرس‌های عمومی آماده به‌صورت پیش‌فرض تنظیم شده‌اند؛ در صورت نیاز قابل جایگزینی‌اند |
+| `SOUNDCLOUD_API_URL` / `SHAZAM_API_URL` / `INSTA_API_URL` | var | آدرس‌های عمومی آماده به‌صورت پیش‌فرض تنظیم شده‌اند؛ کاربر نیازی به تغییر آن‌ها ندارد |
 | `LRCLIB_API_URL` | var | `https://lrclib.net` |
 | `SHAZAM_BACKEND_URL` / `_KEY` | secret (opt) | ffmpeg backend for OGG/video recognition |
 | `TELEGRAM_API_BASE` | var (opt) | override for e2e tests |
