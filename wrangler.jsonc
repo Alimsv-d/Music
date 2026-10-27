@@ -6,9 +6,6 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "observability": { "enabled": true },
-  "vars": {
-    "PUBLIC_URL": ""
-  },
   "kv_namespaces": [
     { "binding": "KV" }
   ],
