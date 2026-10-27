@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "music-bot",
-  "main": "src/index.js",
+  "main": "src/worker.js",
   "compatibility_date": "2026-10-25",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
