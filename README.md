@@ -53,40 +53,21 @@ validated progressive file directly.
 
 ---
 
-## 🚀 Deploy — one click to Cloudflare
+## 🚀 استقرار روی Cloudflare Workers با یک کلیک
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Alimsv-d/Music)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Alimsv-d/Music)
 
-> The button above takes you to Cloudflare's deploy page — it copies the repo's
-> `wrangler.jsonc`, creates the KV binding, provisions secrets, and deploys the
-> single Worker containing the bot + SoundCloud + Shazam + Instagram services.
-> The README and `deploy.yml` workflow below are the safer, more repeatable way
-> to deploy (they also set the webhook properly).
+با فشردن دکمه، Cloudflare مخزن عمومی را وارد فرایند راه‌اندازی می‌کند، Worker و KV را می‌سازد و مقادیر محرمانه را از شما می‌خواهد. مقادیر پیش‌فرض و توضیحات در فرم Deploy مشخص می‌کنند چه چیزی باید وارد شود. حداقل لازم: توکن ربات تلگرام (`BOT_TOKEN`) و شناسه عددی مالک (`OWNER_ID`). برای فعال‌شدن ربات و انتقال webhook، `WEBHOOK_SECRET`، `LINK_SECRET` و `ADMIN_SETUP_KEY` هم لازم‌اند. Cloudflare API Token و Account ID را در حساب Cloudflare خود انتخاب/تأیید می‌کنید؛ این مقادیر به مخزن اضافه نمی‌شوند.
 
-### One-click deploy via GitHub Actions (recommended)
+پس از Deploy، یک‌بار مسیر `/setup?key=<ADMIN_SETUP_KEY>` را روی آدرس Worker اجرا کنید تا webhook تلگرام ثبت شود. برای استفاده از سرویس‌های داخلی SoundCloud، Shazam و Instagram تنظیم URL اضافی لازم نیست. شناسه مالک پیش‌فرض در `wrangler.jsonc` قرار دارد و اگر بات برای شماست آن را به شناسه عددی Telegram خود تغییر دهید.
 
-Repo → **Actions → deploy → Run workflow**, fill the fields and hit **Run**:
+> Deploy Button رسمی Cloudflare برای مخزن عمومی کار می‌کند. کاربر باید در Cloudflare وارد شده باشد و مجوز اتصال به GitHub و ایجاد Worker/KV را بدهد. secretها را فقط در فرم Cloudflare وارد کنید، نه در فایل‌های مخزن.
 
-| Field | What to paste |
-|---|---|
-| `CLOUDFLARE_API_TOKEN` | `dash.cloudflare.com` → API Tokens → Custom: Workers **Edit**, Workers KV **Edit**, Account Settings **Read** |
-| `CLOUDFLARE_ACCOUNT_ID` | dash → Workers → right sidebar |
-| `BOT_TOKEN` | from **@BotFather** |
-| `WEBHOOK_SECRET` | `openssl rand -hex 24` |
-| `LINK_SECRET` | `openssl rand -hex 24` |
-| `ADMIN_SETUP_KEY` | `openssl rand -hex 16` |
-| `SHAZAM_BACKEND_URL`/`_KEY` | (optional) ffmpeg backend for video/voice recognition |
-| `activate` | tick to register the webhook → bot goes live on Cloudflare (replaces the cPanel webhook) |
+### استقرار از طریق GitHub Actions (گزینه جایگزین)
 
-The action validates the fields, runs tests, provisions the KV namespace, uploads
-the secrets, deploys the single Worker containing the bot + SoundCloud + Shazam
-+ Instagram services, and — only when `activate` is ticked — registers the
-webhook + verifies it. Values you type are **not** stored in the repo. To avoid
-retyping every run, save the same names as repository secrets and any field left
-blank falls back to that secret.
+اگر نمی‌خواهید از دکمه بالا استفاده کنید، مسیر Actions نیز موجود است:
 
-- `activate = false` → Worker deployed + health-checked; webhook untouched.
-- `activate = true` → Worker deployed + `/setup` runs → webhook moved to Cloudflare (final cutover from cPanel).
+Repo → **Actions → deploy → Run workflow** و فیلدهای Cloudflare و Telegram را پر کنید. برای جزییات ورودی‌ها و تنظیم webhook، workflow در `.github/workflows/deploy.yml` را ببینید.
 
 ### 4 — BotFather checklist (one-time, required)
 ```
@@ -102,9 +83,8 @@ Then send `/start` to your bot. Done.
 ## 🖥 Manual / local deploy (cPanel host or Termux)
 
 ```bash
-# clone needs auth because the repo is private:
-git clone https://<TOKEN>@github.com/Alimsv-d/Music.git   # fine-grained PAT
-# or with SSH:  git clone git@github.com:Alimsv-d/Music.git
+# clone from the public repository:
+git clone https://github.com/Alimsv-d/Music.git
 
 cd Music
 ./scripts/bootstrap.sh          # checks node, installs, .dev.vars, tests, gh secrets
@@ -186,9 +166,9 @@ node scripts/secret-scan.mjs  # before every push
 | Group ignores /music | `/setprivacy Disable`, re-add bot, check `/settings` enabled |
 
 ## ❓ FAQ
-- **Why GitHub Actions, not the deploy button?** Private repo — the button can't see it.
-- **Can users self-host?** They'd need their own tokens + the backend services.
-- **Stats exact?** Approximate (KV). Swap to D1 if precision needed.
+- **چرا GitHub Actions؟** این روش جایگزین دکمه Deploy است و برای deployهای تکراری یا کنترل‌شده کاربرد دارد؛ برای شروع سریع از دکمه نارنجی بالا استفاده کنید.
+- **آیا کاربر می‌تواند خودش میزبانی کند؟** بله؛ باید حساب Cloudflare، توکن ربات تلگرام و شناسه عددی مالک خودش را وارد کند.
+- **آمار دقیق است؟** تقریبی است (KV). برای دقت کامل می‌توان D1 را جایگزین کرد.
 
 ---
 

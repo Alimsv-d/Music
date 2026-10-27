@@ -862,7 +862,7 @@ GET /health  ·  GET /openapi.json</pre>
 /search?q= · /music?id= · /download-url?id=
 /direct-download?id= · /music-by-url?url=</pre>
     <pre>// reuse in your own code / bot
-import { SoundCloud } from "./worker.js";
+import { SoundCloud } from "./soundcloud.js";
 const sc = new SoundCloud(); await sc.init();
 const tracks = await sc.searchMusic("تتلو");
 const media  = await sc.streamUrl(tracks[0].sid);</pre>
@@ -1776,7 +1776,7 @@ export default {
 };
 
 // Exported for reuse (e.g. inside a Telegram bot). Usage:
-//   import worker, { SoundCloud } from "./worker.js";
+//   import worker, { SoundCloud } from "./soundcloud.js";
 //   const sc = new SoundCloud(); await sc.init();
 //   const tracks = await sc.searchMusic("امیر تتلو");
 //   const media = await sc.streamUrl(track.sid);   // { url, file, hls }
