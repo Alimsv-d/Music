@@ -164,7 +164,7 @@ async function cronTick(env) {
   await env.KV.put('post_queue', JSON.stringify(q));
 }
 
-export default {
+module.exports = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const whPath = '/wh/' + (await sha256Hex(env.WEBHOOK_SECRET || 'x')).slice(0, 24);
