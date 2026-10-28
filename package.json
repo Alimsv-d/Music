@@ -19,6 +19,7 @@
   },
   "devDependencies": {
     "bidi-js": "^1.1.0",
+    "esbuild": "^0.28.2",
     "telegram": "^2.26.22"
   }
 }

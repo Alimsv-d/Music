@@ -19,11 +19,15 @@ function makeEnv() {
 }
 
 async function loadWorker() {
-  const source = await readFile(new URL('../src/worker.js', import.meta.url), 'utf8');
-  const module = { exports: {} };
-  const body = source.replace(/export default \{[\s\S]*\n\};\s*$/, (m) => 'module.exports.default = ' + m.replace(/^export default /, '').trim());
-  new Function('module', 'exports', body)(module, module.exports);
-  return module.exports.default;
+  const { buildSync } = await import('esbuild');
+  const res = buildSync({
+    entryPoints: ['src/worker.js'], bundle: true, format: 'cjs', platform: 'neutral',
+    write: false, logLevel: 'silent',
+    banner: { js: 'var module={exports:{}};var exports=module.exports;' },
+    footer: { js: 'globalThis.__wk=module.exports.default||module.exports;' },
+  });
+  new Function(res.outputFiles[0].text)();
+  return globalThis.__wk;
 }
 
 function webhookPath() { return '/wh/' + createHash('sha256').update('test-secret').digest('hex').slice(0, 24); }
