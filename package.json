@@ -4,19 +4,22 @@
   "private": true,
   "description": "Music — a fast, secure Telegram music bot",
   "type": "commonjs",
-  "main": "src/worker.js",
+  "main": "app.js",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "migrate": "wrangler d1 migrations apply music_bot_db --remote"
-  },
-  "devDependencies": {
-    "wrangler": "^4.152.0"
+    "start": "node src/index.js",
+    "dev": "node src/index.js --polling",
+    "set-webhook": "node src/set-webhook.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js test/*.test.mjs"
   },
   "dependencies": {
     "grammy": "^1.46.0"
+  },
+  "devDependencies": {
+    "bidi-js": "^1.1.0",
+    "esbuild": "^0.28.2",
+    "telegram": "^2.26.22"
   }
 }

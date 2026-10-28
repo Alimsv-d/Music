@@ -1,11 +1,8 @@
 'use strict';
 // In-memory LRU caches + negative cache + request coalescing.
-<<<<<<< HEAD
-=======
 // Central policy lives here so every service benefits from the same budget-aware
 // behavior: longer TTLs for immutable data, negative caching to avoid upstream
 // 404s, and coalescing so concurrent users share one outbound request.
->>>>>>> main
 class LRU {
   constructor(max = 500, ttl = 600000) {
     this.max = max; this.ttl = ttl; this.map = new Map();
@@ -24,14 +21,6 @@ class LRU {
   }
   has(k) { return this.get(k) !== undefined; }
   del(k) { this.map.delete(k); }
-<<<<<<< HEAD
-  get size() { return this.map.size; }
-}
-
-const searchCache = new LRU(300, 10 * 60 * 1000);   // 10 min
-const trackCache = new LRU(500, 60 * 60 * 1000);    // 1 hour
-const negCache = new LRU(500, 5 * 60 * 1000);        // negative results
-=======
   clear() { this.map.clear(); }
   get size() { return this.map.size; }
 }
@@ -48,7 +37,6 @@ const trackCache   = new LRU(1000, TRACK_TTL);
 const negCache     = new LRU(600,  NEG_TTL);
 const recogCache   = new LRU(300,  RECOG_TTL);
 const fileIdCache  = new LRU(2000, TRACK_TTL);
->>>>>>> main
 
 const inflight = new Map(); // key -> Promise
 function coalesce(key, fn) {
@@ -58,9 +46,6 @@ function coalesce(key, fn) {
   return p;
 }
 
-<<<<<<< HEAD
-module.exports = { LRU, searchCache, trackCache, negCache, coalesce };
-=======
 // Cheap daily quota guard.  Counts outbound calls per worker host; when the
 // free-tier budget is exhausted we return synthetic 429s instead of wasting
 // real requests.  Owners can still force through via owner-exempt checks.
@@ -89,4 +74,3 @@ function quotaStats() {
 }
 
 module.exports = { LRU, searchCache, trackCache, negCache, recogCache, fileIdCache, coalesce, quotaExceeded, quotaUse, quotaStats };
->>>>>>> main

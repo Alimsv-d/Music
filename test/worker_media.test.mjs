@@ -74,7 +74,7 @@ test('Instagram reel uses /api/v1/resolve, selects video and submits supported m
   globalThis.fetch = async (url, options = {}) => {
     const u = String(url);
     calls.push({ url: u, options });
-    if (u === 'https://ig.test/api/v1/resolve?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FABC%2F') return json({ ok: true, data: { items: [{ type: 'video', variants: [{ url: 'https://cdn.test/thumb.jpg', mime: 'image/jpeg' }, { url: 'https://cdn.test/reel.mp4', mime: 'video/mp4', has_audio: true }] }] } });
+    if (u === 'https://ig.test/api/v1/resolve?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FABC%2F' || u === 'https://ig.test/resolve?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FABC%2F') return json({ ok: true, data: { items: [{ type: 'video', variants: [{ url: 'https://cdn.test/thumb.jpg', mime: 'image/jpeg' }, { url: 'https://cdn.test/reel.mp4', mime: 'video/mp4', has_audio: true }] }] } });
     if (u === 'https://cdn.test/reel.mp4') return new Response(new Uint8Array([5, 6, 7]), { headers: { 'content-type': 'video/mp4' } });
     if (u === 'https://sh.test/api/v1/recognize' || u === 'https://sh.test/api/v1/recognize/url') return json({ ok: true, data: { found: true, artist: 'Artist', title: 'Song' } });
     if (u.startsWith('https://sc.test/api/v1/search')) return json({ ok: true, results: [{ sid: '42', artist: 'Artist', title: 'Song' }] });
