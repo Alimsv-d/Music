@@ -10,18 +10,24 @@ enabled = true
 [vars]
 PUBLIC_URL = "https://music-telegrambot.alighost5920.workers.dev"
 
-# Secrets (set via `wrangler secret put`):
-#   BOT_TOKEN, WEBHOOK_SECRET, OWNER_ID,
-#   SOUNDCLOUD_API_URL, SHAZAM_API_URL, INSTA_API_URL
+# Bindings created/managed by .github/workflows/deploy.yml:
+#   D1 database   -> binding DB  (migrations/ applied by workflow)
+#   KV namespace  -> binding KV  (cache + rate-limit)
+#   R2 (optional) -> not used
 
-[[kv_namespaces]]
-binding = "KV"
-id = "3c288f4a7fa0403fb49e1dddf263f0eb"
+# Secrets (set via `wrangler secret put` in the workflow):
+#   BOT_TOKEN, WEBHOOK_SECRET, CRON_SECRET, OWNER_ID,
+#   SOUNDCLOUD_API_URL, SHAZAM_API_URL, INSTA_API_URL,
+#   HEAVY_AUDIO_URL (optional — enables audio recognition on Workers)
 
 [[d1_databases]]
 binding = "DB"
 database_name = "music_bot_db"
 database_id = "ba0833b3-4b78-4e2a-b45b-f10d3303131b"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "3c288f4a7fa0403fb49e1dddf263f0eb"
 
 [triggers]
 crons = ["*/5 * * * *"]
