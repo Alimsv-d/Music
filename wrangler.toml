@@ -1,11 +1,11 @@
-'name': 'music-bot'
+'name': 'music-telegrambot'
 'main': 'src/worker.js'
 'compatibility_date': '2026-10-25'
 
 [vars]
-PUBLIC_URL = 'https://music.example.workers.dev'
+PUBLIC_URL = 'https://music-telegrambot.alighost5920.workers.dev'
 
-# Bindings created/managed by .github/workflows/deploy.yml:
+# Bindings are created/managed by .github/workflows/deploy.yml:
 #   D1 database   -> binding DB  (migrations/ applied by workflow)
 #   KV namespace  -> binding KV  (cache + rate-limit)
 #   R2 (optional) -> not used
@@ -18,11 +18,11 @@ PUBLIC_URL = 'https://music.example.workers.dev'
 [[d1_databases]]
 binding = 'DB'
 database_name = 'music_bot_db'
-database_id = 'REPLACE_BY_WORKFLOW'
+database_id = 'ba0833b3-4b78-4e2a-b45b-f10d3303131b'
 
 [[kv_namespaces]]
 binding = 'KV'
-id = 'REPLACE_BY_WORKFLOW'
+id = '3c288f4a7fa0403fb49e1dddf263f0eb'
 
 [triggers]
 crons = ['*/5 * * * *']
