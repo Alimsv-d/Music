@@ -82,6 +82,10 @@ async function search(raw, lang) {
     }
   }
   const items = [...merged.values()].map((tr) => ({ tr, score: score(a.normalized, tr) })).sort((x,y) => y.score - x.score);
+<<<<<<< HEAD
   return { kind: items.length ? 'ok' : (errors.length === settled.length ? 'error' : 'empty'), query: a, items };
+=======
+  return { kind: items.length ? 'ok' : (errors.length === settled.length ? 'error' : 'empty'), query: a, items, errors };
+>>>>>>> main
 }
 module.exports = { analyze, search, score, lyricWindows, lyricOverlap };

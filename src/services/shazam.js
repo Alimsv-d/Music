@@ -1,10 +1,14 @@
 'use strict';
 // Shazam (Shzm) service client. Fingerprint computed in a worker thread.
+// Quota-safe: identical clips are cached by content hash for 1 hour, negative
+// results are remembered for 15 min, and concurrent identical uploads share
+// one outbound request via coalescing.
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
+const crypto = require('node:crypto');
 const config = require('../config');
 const { postJson, getJson } = require('../core/http');
-const { coalesce } = require('../core/cache');
+const { coalesce, recogCache, negCache } = require('../core/cache');
 
 const base = () => config.shazamApi;
 const WORKER = path.join(__dirname, 'fingerprint_worker.js');
@@ -40,35 +44,73 @@ async function fingerprintPcm(pcm /* Int16Array */, maxSeconds = 12, timeout = 2
   });
 }
 
+// Stable content hash for a PCM buffer — used to dedupe repeated uploads of the
+// same voice/video/audio clip.
+function pcmHash(pcm) {
+  const h = crypto.createHash('sha256');
+  h.update(Buffer.from(pcm.buffer, pcm.byteOffset, Math.min(pcm.byteLength, 64 * 1024)));
+  h.update(String(pcm.length));
+  return h.digest('hex').slice(0, 24);
+}
+
 async function recognizeBySignature(pcm, { lyrics = true } = {}) {
-  // Compute fingerprint locally, POST signature; fallback to raw PCM.
-  let uri, samplems;
-  try {
-    ({ uri, samplems } = await fingerprintPcm(pcm));
-  } catch (_) {
-    uri = null;
-  }
-  if (uri) {
-    const d = await postJson(base() + '/api/v1/recognize', { signature: uri, samplems, lyrics }, { timeout: 20000 });
-    if (d.ok && d.data) return d.data;
-    if (d.error && d.error.code === 'E_NO_MATCH') throw new ServiceError('E_NO_MATCH', 'no match', 404);
-    // fall through to PCM on other errors
-  }
-  const pcmB64 = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).toString('base64');
-  const d = await postJson(base() + '/api/v1/recognize', { pcm: pcmB64, lyrics }, { timeout: 30000 });
-  if (d.ok && d.data) return d.data;
-  throw new ServiceError(d.error && d.error.code || 'E_UPSTREAM', 'recognize failed', d.status);
+  const key = 'fp:' + pcmHash(pcm);
+  const cached = recogCache.get(key);
+  if (cached) return cached;
+  if (negCache.get(key)) throw new ServiceError('E_NO_MATCH', 'no match (cached)', 404);
+
+  return coalesce(key, async () => {
+    // Compute fingerprint locally, POST signature; fallback to raw PCM.
+    let uri, samplems;
+    try {
+      ({ uri, samplems } = await fingerprintPcm(pcm));
+    } catch (_) {
+      uri = null;
+    }
+    if (uri) {
+      const d = await postJson(base() + '/api/v1/recognize', { signature: uri, samplems, lyrics }, { timeout: 20000 });
+      if (d.ok && d.data) {
+        recogCache.set(key, d.data);
+        return d.data;
+      }
+      if (d.error && d.error.code === 'E_NO_MATCH') {
+        negCache.set(key, true);
+        throw new ServiceError('E_NO_MATCH', 'no match', 404);
+      }
+      // fall through to PCM on other errors
+    }
+    const pcmB64 = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).toString('base64');
+    const d = await postJson(base() + '/api/v1/recognize', { pcm: pcmB64, lyrics }, { timeout: 30000 });
+    if (d.ok && d.data) {
+      recogCache.set(key, d.data);
+      return d.data;
+    }
+    const code = d.error && d.error.code || 'E_UPSTREAM';
+    if (code === 'E_NO_MATCH') negCache.set(key, true);
+    throw new ServiceError(code, 'recognize failed', d.status);
+  });
 }
 
 async function recognizeWav(wavBuf, { lyrics = true } = {}) {
-  // Send raw WAV (worker decodes). Prefer fingerprint when we can decode anyway.
-  const res = await require('../core/http').request(base() + '/api/v1/recognize', {
-    method: 'POST', headers: { 'Content-Type': 'audio/wav', Accept: 'application/json' },
-    body: wavBuf, timeout: 30000,
+  const key = 'wav:' + crypto.createHash('sha256').update(wavBuf).digest('hex').slice(0, 24);
+  const cached = recogCache.get(key);
+  if (cached) return cached;
+  if (negCache.get(key)) throw new ServiceError('E_NO_MATCH', 'no match (cached)', 404);
+
+  return coalesce(key, async () => {
+    const res = await require('../core/http').request(base() + '/api/v1/recognize', {
+      method: 'POST', headers: { 'Content-Type': 'audio/wav', Accept: 'application/json' },
+      body: wavBuf, timeout: 30000,
+    });
+    const d = res.json();
+    if (d.ok && d.data) {
+      recogCache.set(key, d.data);
+      return d.data;
+    }
+    const code = d.error && d.error.code || 'E_UPSTREAM';
+    if (code === 'E_NO_MATCH') negCache.set(key, true);
+    throw new ServiceError(code, 'recognize failed', d.status);
   });
-  const d = res.json();
-  if (d.ok && d.data) return d.data;
-  throw new ServiceError(d.error && d.error.code || 'E_UPSTREAM', 'recognize failed', d.status);
 }
 
 async function searchText(query, limit = 6, lyrics = false) {
@@ -81,11 +123,14 @@ async function searchText(query, limit = 6, lyrics = false) {
 }
 
 async function lyrics(artist, title) {
-  try {
-    const d = await getJson(base() + '/api/v1/lyrics?' + new URLSearchParams({ artist, title }), { timeout: 12000 });
-    if (d.ok && d.data && d.data.available) return d.data;
-    return null;
-  } catch (_) { return null; }
+  const key = `lyr:${String(artist).toLowerCase()}:${String(title).toLowerCase()}`;
+  return coalesce(key, async () => {
+    try {
+      const d = await getJson(base() + '/api/v1/lyrics?' + new URLSearchParams({ artist, title }), { timeout: 12000 });
+      if (d.ok && d.data && d.data.available) return d.data;
+      return null;
+    } catch (_) { return null; }
+  });
 }
 
 async function health() {
