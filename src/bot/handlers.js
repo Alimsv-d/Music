@@ -280,7 +280,11 @@ async function _doSearch(ctx, q) {
   if (w) { await editOrReply(ctx, t(lang, 'rate_limited', { wait: rl.fmtWait(w, lang, t) })); return; }
   const result = await searchEngine.search(q, lang);
   if (result.kind === 'invalid') return editOrReply(ctx, 'لطفاً نام آهنگ یا یک خط کوتاه از ترانه را بفرست.');
-  if (result.kind === 'error') return editOrReply(ctx, '⚠️ سرویس جستجو موقتاً در دسترس نیست؛ چند لحظه بعد دوباره تلاش کن.');
+  if (result.kind === 'error') {
+    const quota = result.errors && result.errors.find((x) => x.reason && x.reason.code === 'DAILY_QUOTA');
+    if (quota) return editOrReply(ctx, '⏳ سهمیه روزانه سرویس تمام شده؛ فردا دوباره امتحان کن.');
+    return editOrReply(ctx, '⚠️ سرویس جستجو موقتاً در دسترس نیست؛ چند لحظه بعد دوباره تلاش کن.');
+  }
   if (!result.items || !result.items.length) {
     if (result.query.lyric) return editOrReply(ctx, 'از روی این خط ترانه نتونستم آهنگ رو پیدا کنم؛ ویس یا ویدیوی آهنگ رو بفرست تا شناسایی کنم 🎤');
     return editOrReply(ctx, t(lang, 'no_results'));
@@ -351,6 +355,7 @@ async function runDownload(ctx, sid) {
       if (ok) return;
     }
     const msg = e.code === 'NOT_DOWNLOADABLE' ? t(lang, 'error_not_downloadable')
+      : e.code === 'DAILY_QUOTA' ? '⏳ سهمیه روزانه سرویس تمام شده؛ فردا دوباره امتحان کن.'
       : (e.code === 'PAYLOAD_TOO_LARGE' || e.code === 'TRACK_TOO_LONG') ? t(lang, 'error_too_large') : t(lang, 'error_generic');
     await answer(ctx, msg, true);
   } finally { globalDl.n--; userDl.set(uid, Math.max(0, (userDl.get(uid) || 1) - 1)); }
@@ -384,17 +389,18 @@ async function doRecognize(ctx, fileRef) {
     if (!d || !d.found) { await editOrReply(ctx, t(lang, 'recognize_none')); return; }
     store.incrStats('rec');
     ctx.panelMsgId = status && status.message_id;
-    if (Number(d.confidence || 0) >= 70) {
-      const q = `${d.artist || ''} ${d.title || ''}`.trim();
-      try {
-        const found = await sc.search(q, 1, lang);
-        const tr = (found.results || [])[0];
-        if (tr) {
-          if (status && status.message_id) await ctx.api.deleteMessage(ctx.chat.id, status.message_id).catch(() => {});
-          return runDownload(ctx, sc.sidOf(tr));
-        }
-      } catch (_) {}
-    }
+    // Always try to resolve to SoundCloud and send the file — the user asked
+    // for the song, not just a name.  The recog card is only a fallback when
+    // no playable SC result exists.
+    const q = `${d.artist || ''} ${d.title || ''}`.trim();
+    try {
+      const found = await sc.search(q, 1, lang);
+      const tr = (found.results || []).find((r) => sc.isPlayable(r)) || (found.results || [])[0];
+      if (tr) {
+        if (status && status.message_id) await ctx.api.deleteMessage(ctx.chat.id, status.message_id).catch(() => {});
+        return runDownload(ctx, sc.sidOf(tr));
+      }
+    } catch (_) {}
     await panel.show(ctx, 'recog', { data: d }, { push: false });
   } catch (e) {
     log.warn('recog fail', e.code);
@@ -403,6 +409,7 @@ async function doRecognize(ctx, fileRef) {
       : e.code === 'NO_AUDIO' ? '⚠️ صدای قابل تشخیصی در این فایل پیدا نشد.'
       : e.code === 'UNSUPPORTED' ? t(lang, 'recognize_badformat')
       : e.code === 'BUSY' ? t(lang, 'processing')
+      : e.code === 'DAILY_QUOTA' ? '⏳ سهمیه روزانه سرویس تمام شده؛ فردا دوباره امتحان کن.'
       : t(lang, 'recognize_none');
     await editOrReply(ctx, msg);
   }
@@ -502,6 +509,16 @@ async function instaRecognize(ctx) {
     const rec = await sh.recognizeBySignature(pcm, { lyrics: true });
     if (!rec || !rec.found) { await ctx.reply(t(lang, 'recognize_none')); return; }
     store.incrStats('rec');
+    // Direct-send the recognized track from SoundCloud.
+    const q = `${rec.artist || ''} ${rec.title || ''}`.trim();
+    try {
+      const found = await sc.search(q, 1, lang);
+      const tr = (found.results || []).find((r) => sc.isPlayable(r)) || (found.results || [])[0];
+      if (tr) {
+        await runDownload(ctx, sc.sidOf(tr));
+        return;
+      }
+    } catch (_) {}
     ctx.panelMsgId = ctx.callbackQuery && ctx.callbackQuery.message && ctx.callbackQuery.message.message_id;
     await panel.show(ctx, 'recog', { data: rec }, { push: false });
   } catch (e) {

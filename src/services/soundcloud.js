@@ -1,8 +1,10 @@
 'use strict';
 // SoundCloud service client.
+// Quota-safe: search/track/resolve are cached aggressively; every outbound call
+// is counted against a daily budget so the worker free-tier cap is never hit.
 const config = require('../config');
 const { getJson, request, downloadTo, HttpError } = require('../core/http');
-const { searchCache, trackCache, negCache, coalesce } = require('../core/cache');
+const { searchCache, trackCache, negCache, coalesce, quotaExceeded, quotaUse } = require('../core/cache');
 const { getStore } = require('../core/store');
 
 const base = () => config.scApi;
@@ -17,8 +19,15 @@ function wrap(e) {
   return new ServiceError(code, e.message, e.status);
 }
 async function call(path, params, timeout) {
+  const host = new URL(base()).host;
+  if (quotaExceeded(host)) {
+    const e = new ServiceError('DAILY_QUOTA', 'daily API budget reached');
+    e.status = 429;
+    throw e;
+  }
   try {
     const url = base() + path + (params ? '?' + new URLSearchParams(params) : '');
+    quotaUse(host);
     return await getJson(url, { timeout: timeout || 12000, retries: 2 });
   } catch (e) { throw wrap(e); }
 }

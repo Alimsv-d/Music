@@ -101,20 +101,72 @@ class TG {
   getMe() { return this.call('getMe'); }
 }
 
+// ---------------------------------------------------------------------------
+// Budget-aware caching layer.  Keeps the free-tier daily request ceiling safe
+// by deduplicating identical work and remembering negative results.
+// ---------------------------------------------------------------------------
+const CACHE_TTL = {
+  SEARCH: 30 * 60 * 1000,   // 30 min — searches are the hottest key
+  TRACK:  24 * 60 * 60 * 1000, // 24 h — track metadata rarely changes
+  NEG:    15 * 60 * 1000,   // 15 min — remember 'no results'
+  RECOG:  60 * 60 * 1000,   // 1 h  — same clip = same song
+};
+const _mem = new Map(); // key -> {v, exp}
+function memGet(k) {
+  const e = _mem.get(k);
+  if (!e || Date.now() > e.exp) return undefined;
+  _mem.delete(k); _mem.set(k, e);
+  return e.v;
+}
+function memSet(k, v, ttl) {
+  _mem.delete(k); _mem.set(k, { v, exp: Date.now() + ttl });
+  if (_mem.size > 1000) _mem.delete(_mem.keys().next().value);
+}
+const inflight = new Map();
+function coalesce(key, fn) {
+  if (inflight.has(key)) return inflight.get(key);
+  const p = (async () => { try { return await fn(); } finally { inflight.delete(key); } })();
+  inflight.set(key, p);
+  return p;
+}
+
+// Daily quota guard — counts outbound calls per worker host; when the budget is
+// exhausted we short-circuit locally instead of burning real requests.
+const DAILY_BUDGET = 8000; // safe margin under Cloudflare's 100k free limit
+const _quota = new Map();  // host -> {day, n}
+function quotaKey(host) { return `${host}:${new Date().toISOString().slice(0, 10)}`; }
+function quotaExceeded(host) {
+  const q = _quota.get(quotaKey(host)) || { n: 0 };
+  return q.n >= DAILY_BUDGET;
+}
+function quotaUse(host) {
+  const k = quotaKey(host);
+  const q = _quota.get(k) || { n: 0 };
+  q.n++; _quota.set(k, q);
+  for (const key of _quota.keys()) if (key !== k && key.split(':')[1] !== k.split(':')[1]) _quota.delete(key);
+}
+
 async function scCall(env, p, params) {
   const base = v(env, 'SOUNDCLOUD_API_URL', FB.SOUNDCLOUD_API_URL).replace(/\/$/, '');
+  const host = new URL(base).host;
+  if (quotaExceeded(host)) return { ok: false, error: { code: 'DAILY_QUOTA', message: 'daily budget reached' } };
   const url = base + p + (params && Object.keys(params).length ? '?' + new URLSearchParams(params) : '');
-  try { const r = await fetch(url, { headers: { Accept: 'application/json' } }); return await r.json(); }
+  try { quotaUse(host); const r = await fetch(url, { headers: { Accept: 'application/json' } }); return await r.json(); }
   catch (e) { return { ok: false }; }
 }
 async function shCall(env, p, body) {
   const base = v(env, 'SHAZAM_API_URL', FB.SHAZAM_API_URL).replace(/\/$/, '');
-  try { const r = await fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body || {}) }); return await r.json(); }
+  const host = new URL(base).host;
+  if (quotaExceeded(host)) return { ok: false, error: { code: 'DAILY_QUOTA', message: 'daily budget reached' } };
+  try { quotaUse(host); const r = await fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body || {}) }); return await r.json(); }
   catch (e) { return { ok: false }; }
 }
 async function shMultipart(env, bytes, filename, mime) {
   const base = v(env, 'SHAZAM_API_URL', FB.SHAZAM_API_URL).replace(/\/$/, '');
+  const host = new URL(base).host;
+  if (quotaExceeded(host)) return { ok: false, error: { code: 'DAILY_QUOTA', message: 'daily budget reached' } };
   try {
+    quotaUse(host);
     const form = new FormData();
     form.append('file', new Blob([bytes], { type: mime || 'application/octet-stream' }), filename || 'media.bin');
     form.append('lyrics', 'true');
@@ -124,7 +176,9 @@ async function shMultipart(env, bytes, filename, mime) {
 }
 async function shRecognizeUrl(env, url) {
   const base = v(env, 'SHAZAM_API_URL', FB.SHAZAM_API_URL).replace(/\/$/, '');
-  try { const r = await fetch(base + '/api/v1/recognize/url', { method: 'POST', headers: { 'content-type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ url }) }); return await r.json(); }
+  const host = new URL(base).host;
+  if (quotaExceeded(host)) return { ok: false, error: { code: 'DAILY_QUOTA', message: 'daily budget reached' } };
+  try { quotaUse(host); const r = await fetch(base + '/api/v1/recognize/url', { method: 'POST', headers: { 'content-type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ url }) }); return await r.json(); }
   catch (e) { return { ok: false }; }
 }
 // Decode arbitrary media bytes to 16 kHz mono PCM (Int16Array).
@@ -168,15 +222,30 @@ function fingerprintPcm(pcmInt16) {
 }
 
 async function shRecognizePcm(env, pcm) {
-  const slice = pcm.length > 16000 * 12 ? pcm.subarray(0, 16000 * 12) : pcm;
-  // Prefer signature (small, worker-side); fall back to raw PCM.
-  const fp = fingerprintPcm(slice);
-  if (fp) {
-    const r = await shCall(env, '/api/v1/recognize', { signature: fp.uri, samplems: fp.samplems, lyrics: true });
-    if (r && (r.ok || (r.error && !/E_INVALID_SIGNATURE|E_MISSING_INPUT|E_INVALID_INPUT/.test(r.error.code || '')))) return r;
-  }
-  const pcmBytes = new Uint8Array(slice.buffer, slice.byteOffset, slice.byteLength);
-  return shCall(env, '/api/v1/recognize', { pcm: b64url(pcmBytes), lyrics: true });
+  const key = 'fp:' + await sha256Hex(new Uint8Array(pcm.buffer, pcm.byteOffset, Math.min(pcm.byteLength, 64 * 1024)).reduce((a, b) => a + b, '') + pcm.length);
+  const cached = memGet(key);
+  if (cached) return cached;
+  const neg = memGet('neg:' + key);
+  if (neg) return { ok: false, error: { code: 'E_NO_MATCH' } };
+
+  return coalesce(key, async () => {
+    const slice = pcm.length > 16000 * 12 ? pcm.subarray(0, 16000 * 12) : pcm;
+    // Prefer signature (small, worker-side); fall back to raw PCM.
+    const fp = fingerprintPcm(slice);
+    if (fp) {
+      const r = await shCall(env, '/api/v1/recognize', { signature: fp.uri, samplems: fp.samplems, lyrics: true });
+      if (r && (r.ok || (r.error && !/E_INVALID_SIGNATURE|E_MISSING_INPUT|E_INVALID_INPUT/.test(r.error.code || '')))) {
+        if (r.ok) memSet(key, r, CACHE_TTL.RECOG);
+        else if (r.error && r.error.code === 'E_NO_MATCH') memSet('neg:' + key, true, CACHE_TTL.NEG);
+        return r;
+      }
+    }
+    const pcmBytes = new Uint8Array(slice.buffer, slice.byteOffset, slice.byteLength);
+    const r = await shCall(env, '/api/v1/recognize', { pcm: b64url(pcmBytes), lyrics: true });
+    if (r.ok) memSet(key, r, CACHE_TTL.RECOG);
+    else if (r.error && r.error.code === 'E_NO_MATCH') memSet('neg:' + key, true, CACHE_TTL.NEG);
+    return r;
+  });
 }
 
 async function fetchBounded(url, maxBytes = 20 * 1024 * 1024) {
@@ -418,7 +487,11 @@ async function igRecognize(env, tg, cid, urlb) {
   const filename = `instagram.${mediaExt(vit.url, vit.mime, 'mp4')}`;
   const rec = await recognizeBytes(env, media, filename, vit.mime || 'video/mp4', vit.url);
   const d2 = recognitionData(rec);
-  if (!d2) return tg.sendMessage(cid, recognitionFailure(rec));
+  if (!d2) {
+    if (rec && rec.error && rec.error.code === 'DAILY_QUOTA')
+      return tg.sendMessage(cid, '⏳ سهمیه روزانه سرویس تمام شده؛ فردا دوباره امتحان کن.');
+    return tg.sendMessage(cid, recognitionFailure(rec));
+  }
   const q2 = `${d2.artist} ${d2.title}`.trim();
   const sr = await scCall(env, '/api/v1/search', { q: q2 });
   const tr2 = (sr && sr.ok && sr.results || [])[0];
@@ -446,7 +519,11 @@ async function recognizeMedia(env, tg, cid, token, f) {
   const filename = `telegram.${ext}`;
   const rec = await recognizeBytes(env, media, filename, mime, fileUrl);
   const d2 = recognitionData(rec);
-  if (!d2) return tg.sendMessage(cid, recognitionFailure(rec));
+  if (!d2) {
+    if (rec && rec.error && rec.error.code === 'DAILY_QUOTA')
+      return tg.sendMessage(cid, '⏳ سهمیه روزانه سرویس تمام شده؛ فردا دوباره امتحان کن.');
+    return tg.sendMessage(cid, recognitionFailure(rec));
+  }
   const q2 = `${d2.artist} ${d2.title}`.trim();
   const sr = await scCall(env, '/api/v1/search', { q: q2 });
   const tr3 = (sr && sr.ok && sr.results || [])[0];
@@ -459,9 +536,19 @@ async function recognizeMedia(env, tg, cid, token, f) {
 }
 
 async function searchAndList(env, tg, cid, q) {
+  const key = 'sc:' + q.toLowerCase();
+  const cached = memGet(key);
+  if (cached) {
+    const rows = cached.slice(0, 10).map((tr) =>
+      [G(`${(tr.artist || '')} — ${tr.title || ''}`.slice(0, 60), `dl:${sid(tr)}`)]);
+    return tg.sendMessage(cid, `🔎 نتایج «${esc(q)}»\nروی موزیک کلیک کن تا مستقیم ارسال شه:`, { reply_markup: kb(rows) });
+  }
   const sr = await scCall(env, '/api/v1/search', { q });
+  if (sr && sr.error && sr.error.code === 'DAILY_QUOTA')
+    return tg.sendMessage(cid, '⏳ سهمیه روزانه سرویس تمام شده؛ فردا دوباره امتحان کن.');
   const res = (sr && sr.ok && sr.results) || [];
   if (!res.length) return tg.sendMessage(cid, '❌ چیزی پیدا نشد');
+  memSet(key, res, CACHE_TTL.SEARCH);
   const rows = res.slice(0, 10).map((tr) =>
     [G(`${(tr.artist || '')} — ${tr.title || ''}`.slice(0, 60), `dl:${sid(tr)}`)]);
   return tg.sendMessage(cid, `🔎 نتایج «${esc(q)}»\nروی موزیک کلیک کن تا مستقیم ارسال شه:`, { reply_markup: kb(rows) });
