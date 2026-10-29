@@ -2,6 +2,14 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "music-bot",
   "main": "src/index.js",
+
+  // The eshaz wasm-decoder packages import their WebWorker wrapper at module
+  // load; the real @eshaz/web-worker evaluates `Worker` globally and the
+  // Workers runtime has none (deploy error 10021). The stub keeps the module
+  // loadable; our decoders never spawn workers (inline WASM main-thread).
+  "alias": {
+    "@eshaz/web-worker": "./src/stubs/web-worker.js"
+  },
   "compatibility_date": "2026-10-24",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
