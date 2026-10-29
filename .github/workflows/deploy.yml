@@ -60,27 +60,33 @@ jobs:
             [ -n "$v" ] || MISS="$MISS $name"
           done
           if [ -n "$MISS" ]; then
-            echo "::error::Missing repository secrets:$MISS"
-            echo "Add them under Settings › Secrets and variables › Actions:"
-            echo "CLOUDFLARE_API_TOKEN (Workers+KV edit), CLOUDFLARE_ACCOUNT_ID, BOT_TOKEN, WEBHOOK_SECRET (random 32+ chars)"
-            exit 1
+            echo "MISSING=true" >> "$GITHUB_ENV"
+            echo "::notice::Action deploy skipped — missing secrets:$MISS"
+            echo "This repo deploys automatically via Cloudflare Workers Builds, which needs no"
+            echo "GitHub secrets. To enable this Actions path instead, add:${MISS}"
+            echo "→ Settings › Secrets and variables › Actions"
           fi
 
       - name: Install dependencies
+        if: ${{ env.MISSING != 'true' }}
         run: npm ci --no-audit --no-fund
 
       - name: Unit tests
+        if: ${{ env.MISSING != 'true' }}
         run: npm test
 
       - name: Secret scan
+        if: ${{ env.MISSING != 'true' }}
         run: node scripts/secret-scan.mjs
 
       # If the repo leaked a token (e.g. an old branch), abort early so we do
       # not deploy it.
       - name: Provision KV namespace
+        if: ${{ env.MISSING != 'true' }}
         run: node scripts/ensure-kv.mjs
 
       - name: Upload runtime secrets to the worker
+        if: ${{ env.MISSING != 'true' }}
         run: |
           set -e
           for s in BOT_TOKEN WEBHOOK_SECRET LINK_SECRET ADMIN_SETUP_KEY OWNER_ID; do
@@ -92,6 +98,7 @@ jobs:
 
       - name: Deploy worker (3 attempts)
         id: deploy
+        if: ${{ env.MISSING != 'true' }}
         run: |
           set -u
           attempt=1
@@ -125,6 +132,7 @@ jobs:
 
       # ── Telegram webhook: set automatically on EVERY run (push or manual) ──
       - name: Set Telegram webhook
+        if: ${{ env.MISSING != 'true' }}
         run: |
           set -u
           URL="${{ steps.deploy.outputs.worker_url }}"
@@ -149,6 +157,7 @@ jobs:
           echo "Webhook registered: ${URL}/webhook"
 
       - name: Verify health + webhook
+        if: ${{ env.MISSING != 'true' }}
         run: |
           set -u
           URL="${{ steps.deploy.outputs.worker_url }}"
@@ -181,6 +190,13 @@ jobs:
       - name: Job summary
         if: always()
         run: |
+          [ "${MISSING:-}" = "true" ] && {
+              echo "## 🎧 Music bot deploy"
+              echo ""
+              echo "**Skipped** — no Actions secrets configured."
+              echo "_Repository deploys via Cloudflare Workers Builds instead._"
+              exit 0
+          }
           {
             echo "## 🎧 Music bot deploy"
             echo ""
