@@ -52,7 +52,7 @@ export async function handleInlineQuery(ctx, iq) {
   }
   ctx.exec.waitUntil(ctx.store.bump("searches"));
 
-  const base = ctx.publicUrl();
+  const base = ctx.publicUrl(ctx.request);
   const results = [];
   for (const tr of items.slice(0, PAGE)) {
     const fileId = await ctx.store.getTrackFileId(tr.key);

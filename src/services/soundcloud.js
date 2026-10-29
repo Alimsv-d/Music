@@ -41,7 +41,9 @@ export class SoundCloud {
       plays: t.plays || 0,
       downloadable: !!t.downloadable,
       streamable: !!t.streamable,
-      // The worker's own download/stream endpoints.
+      hasMp3: !!t.hasMp3,
+      hasProgressive: !!t.hasProgressive,
+      hasHls: !!t.hasHls,
       downloadUrl: `${this.base}/api/v1/download?id=${sid}`,
       streamUrl: `${this.base}/api/v1/stream?id=${sid}`,
     };

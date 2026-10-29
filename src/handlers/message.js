@@ -8,7 +8,7 @@ import { normalize, similarity, extractInstagramUrl, extractSoundCloudUrl } from
 import { pickMedia } from "./recognize.js";
 
 // ── tiny helpers ────────────────────────────────────────────────────────────
-const SEARCH_PAGE = 7;
+const SEARCH_PAGE = 10;
 const enc = new TextEncoder();
 
 function cardLabel(tr) {
@@ -16,6 +16,14 @@ function cardLabel(tr) {
   const title = tr.title || "؟";
   const dur = tr.duration || fmtDur(tr.duration_ms) || "";
   return `${artist} — ${title}${dur ? ` · ${dur}` : ""}`;
+}
+function chooseSoundCloudMatch(items, artist, title) {
+  const list = Array.isArray(items) ? items : (items?.results || []);
+  const target = normalize(`${artist || ""} ${title || ""}`);
+  const scored = list.map((tr) => ({ tr, score: Math.max(similarity(target, `${tr.artist || ""} ${tr.title || ""}`), similarity(title || "", tr.title || ""), similarity(artist || "", tr.artist || "")) }))
+    .filter((x) => x.tr && x.score >= 0.55)
+    .sort((a, b) => (b.score - a.score) || Number(b.tr.downloadable) - Number(a.tr.downloadable) || (b.tr.plays || 0) - (a.tr.plays || 0));
+  return scored.find((x) => x.tr.downloadable || x.tr.streamable) ?.tr || scored[0]?.tr || null;
 }
 function fmtDur(ms) { if (!ms) return ""; const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
 function perDigits(v) { return String(v).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]); }
@@ -78,6 +86,22 @@ async function pushHist(ctx, uid, tr) {
 // ── rate limit (host buckets; per-user KV windows + escalation) ─────────────
 const BUCKETS = { action: { limit: 8, window: 10 }, search: { limit: 1, window: 2 }, download: { limit: 6, window: 60 }, recognize: { limit: 4, window: 60 }, group: { limit: 20, window: 60 }, ticket: { limit: 3, window: 3600 } };
 const PENALTIES = [60, 600, 3600, 86400];
+const botIdentity = new Map();
+async function isReplyToThisBot(ctx, msg) {
+  const from = msg.reply_to_message?.from;
+  if (!from?.is_bot) return false;
+  const configured = String(ctx.env.BOT_USERNAME || "").replace(/^@/, "").toLowerCase();
+  if (configured && String(from.username || "").toLowerCase() === configured) return true;
+  if (from.id && botIdentity.get(ctx.env.BOT_TOKEN) === from.id) return true;
+  if (!botIdentity.has(ctx.env.BOT_TOKEN)) {
+    try { const me = await ctx.tg.getMe(); if (me?.id) botIdentity.set(ctx.env.BOT_TOKEN, me.id); return me?.id === from.id; } catch {}
+  }
+  return false;
+}
+async function groupAddressed(ctx, msg, text) {
+  const botName = String(ctx.env.BOT_USERNAME || "").replace(/^@/, "").toLowerCase();
+  return Boolean((botName && text.toLowerCase().includes(`@${botName}`)) || await isReplyToThisBot(ctx, msg));
+}
 async function rlCheck(ctx, uid, bucket) {
   const role = await ctx.roleOf(uid);
   if (role !== "user") return null;
@@ -368,7 +392,7 @@ export async function handleMessage(ctx, msg) {
   // media recognition
   if (pickMedia(msg)) {
     if (isGroup) {
-      const replyBot = Boolean(msg.reply_to_message?.from?.is_bot);
+      const replyBot = await isReplyToThisBot(ctx, msg);
       if (!replyBot) return;
     }
     if (!(await gateCheck(ctx, msg, lang))) return;
@@ -393,40 +417,16 @@ export async function handleMessage(ctx, msg) {
 
   // group addressing / smart detect
   if (isGroup) {
-    const botName = String(ctx.env.BOT_USERNAME || "").toLowerCase();
-    const mention = botName && text.toLowerCase().includes(`@${botName}`);
-    const replied = Boolean(msg.reply_to_message?.from?.is_bot);
-    const TRIGGERS = ["آهنگ", "موزیک", "پخش", "متن آهنگ", "ترانه", "music", "song", "play", "lyrics", "track", "песня", "музыка", "播放", "أغنية", "اغنية", "لحن", "canción", "musica", "musique", "lied", "şarkı", "mahnı", "اهنگ"];
-    const firstWord = text.split(/\s+/)[0].toLowerCase();
-    const triggered = TRIGGERS.includes(firstWord) || /^(متن|ترانه|lyrics?)\s+/i.test(text);
-    if (mention || replied || triggered) {
-      const q = text.replace(new RegExp(`@${botName}`, "ig"), "").trim();
+    const mentioned = await groupAddressed(ctx, msg, text);
+    if (mentioned) {
+      const q = text.replace(new RegExp(`@${String(ctx.env.BOT_USERNAME || "").replace(/^@/, "")}`, "ig"), "").trim();
       if (!q) return;
       if (!(await groupPerm(ctx, msg, "search"))) return;
       if (/^(متن|ترانه|lyrics?)\s+/i.test(q)) return doLyrics(ctx, msg, q.replace(/^(متن|ترانه|lyrics?)\s+/i, ""), lang);
       return doSearch(ctx, msg, q, lang);
     }
-    // smart detect
-    const chat = await ctx.store.getChat(chatId) || {};
-    if (chat.smart !== false && text.length < 80 && text.split(/\s+/).length <= 6 && !/[@#\/]|https?:\/\//.test(text)) {
-      const cd = FJ_CACHE.get(`smart:${chatId}`)?.at || 0;
-      if (Date.now() - cd > 20000) {
-        const norm = normalize(text);
-        const neg = await H.get(ctx, "negcache", norm);
-        if (!neg && !(await groupPerm(ctx, msg, "search"))) return;
-        const d = neg ? null : await ctx.sc.search(text, 1, 4).catch(() => null);
-        const items = d?.results || [];
-        const top = items[0];
-        const score = top ? Math.max(similarity(text, top.title || ""), similarity(text, `${top.artist} ${top.title}`)) : 0;
-        if (!neg && score >= 0.55 && top) {
-          FJ_CACHE.set(`smart:${chatId}`, { at: Date.now() });
-          const rows = [[G(t(lang, "dl"), `dl:${sidOf(top)}`)]];
-          await ctx.tg.sendMessage(chatId, `🎵 <b>${escH(top.artist)} — ${escH(top.title)}</b>\n⏱ ${fmtDur(top.duration_ms)}`, { reply_markup: kb(rows) }).catch(() => {});
-        } else if (!neg) {
-          await H.set(ctx, "negcache", norm, true);
-        }
-      }
-    }
+    // Do not answer ordinary group text, trigger words, or arbitrary replies.
+    // Explicit commands and links are handled above/below.
     return;
   }
 
@@ -527,7 +527,7 @@ async function doSearch(ctx, msg, q, lang) {
     return runDownload(ctx, msg, top.tr, lang);
   }
   const id = Date.now().toString(36);
-  const rec = { q, items: scored.slice(0, 15).map((x) => compact(x.tr)), lang, owner: msg.from?.id, at: Date.now(), filter: "pop" };
+  const rec = { q, items: scored.slice(0, 10).map((x) => compact(x.tr)), lang, owner: msg.from?.id, at: Date.now(), filter: "pop" };
   await ctx.store.putSearch(id, rec, 3600);
   return showScreen(ctx, msg.chat.id, null, "results", { ...rec, page: 1, id });
 }
@@ -556,7 +556,7 @@ async function runDownload(ctx, msg, tr, lang) {
   if (!sent) {
     const base = (ctx.env.SOUNDCLOUD_API_URL || `${ctx.publicUrl(ctx.request)}/svc/sc`).replace(/\/$/, "");
     const slug = encodeURIComponent(((artist ? artist + " - " : "") + title).replace(/[\\/:*?"<>|]/g, " ").slice(0, 80) || "track");
-    const urls = [`${base}/f/${sidOf(meta)}/${slug}.mp3`, meta.downloadUrl, meta.streamUrl].filter(Boolean);
+    const urls = [meta.downloadUrl, meta.streamUrl, `${base}/f/${sidOf(meta)}/${slug}.m4a`].filter(Boolean);
     for (const url of urls) {
       try {
         sent = await ctx.tg.sendAudio(msg.chat.id, { audio: url, caption, title, performer: artist, duration: dur, reply_markup: markup });
@@ -626,7 +626,7 @@ async function doRecognize(ctx, msg, target, lang) {
     if (conf >= 70) {
       const q = `${d.artist || ""} ${d.title || ""}`.trim();
       const s = await ctx.sc.search(q, 1, 3).catch(() => null);
-      const tr = (s?.results || s || [])[0];
+      const tr = chooseSoundCloudMatch(s, d.artist, d.title);
       if (tr) { await delMsg(ctx, msg.chat.id, statusMsg?.message_id); return runDownload(ctx, msg, tr, lang); }
     }
     await delMsg(ctx, msg.chat.id, statusMsg?.message_id);
@@ -655,7 +655,7 @@ async function doInsta(ctx, msg, url, lang) {
     try {
       const v = { url: it.url || it.proxyUrl, mime: it.mime || "", quality: "best", index: it.index, size: it.size };
       if (!v.url) continue;
-      const mediaUrl = v.url;
+      const mediaUrl = it.proxyUrl || it.url || (ctx.insta.downloadUrl ? ctx.insta.downloadUrl(d.source_url || url, it.index, "best") : null);
       const isVideo = it.type === "video" || /video/i.test(v.mime);
       const caption = isVideo ? "🎬 <b>Instagram</b>" : "🖼 <b>Instagram</b>";
       const size = Number(v.size || v.filesize || 0);
@@ -765,11 +765,11 @@ export async function handleCallback(ctx, cq) {
       const tr = await ctx.sc.track(data.slice(4)).catch(() => null);
       await answer(ctx, cq);
       const q = `${tr?.artist || ""} ${(tr?.title || "").split(" ").slice(0, 3).join(" ")}`.trim();
-      return doSearch(ctx, { chat: { id: chatId }, from: cq.from, chat: { id: chatId, type: "private" } }, q, lang);
+      return doSearch(ctx, { chat: { id: chatId, type: "private" }, from: cq.from }, q, lang);
     }
     if (data.startsWith("fava:")) { const tr = await ctx.sc.track(data.slice(5)).catch(() => null); await answer(ctx, cq, t(lang, "fav_added"), true); if (tr) { await toggleFav(ctx, uid, tr); return showScreen(ctx, chatId, mid, "track", { sid: data.slice(5), uid }, { push: false, cq }); } return; }
     if (data.startsWith("favd:")) { await answer(ctx, cq, t(lang, "fav_removed"), true); const sid = data.slice(5); const list = await favList(ctx, uid); const tr = list.find((x) => String(x.sid) === sid) || { sid }; await toggleFav(ctx, uid, tr); return showScreen(ctx, chatId, mid, "track", { sid, uid }, { push: false, cq }); }
-    if (data.startsWith("art:")) { await answer(ctx, cq); return doSearch(ctx, { chat: { id: chatId }, from: cq.from, chat: { id: chatId, type: "private" } }, unq64(data.slice(4)), lang); }
+    if (data.startsWith("art:")) { await answer(ctx, cq); return doSearch(ctx, { chat: { id: chatId, type: "private" }, from: cq.from }, unq64(data.slice(4)), lang); }
     if (data.startsWith("rdl:") || data.startsWith("rsim:")) {
       const b64 = data.startsWith("rdl:") ? data.slice(4) : data.slice(5);
       await answer(ctx, cq, t(lang, "searching"));

@@ -36,10 +36,11 @@
     "CREATOR_NAME": "Ali Mousavi",
     "BOT_NAME": "Music",
 
-    // Service base URLs are intentionally empty: when unset, the adapters
-    // self-route to THIS worker's bundled /svc/* services (src/ctx.js),
-    // so every deployment is fully independent. Point them at a dedicated
-    // backend URL only if you want to offload heavy work.
+    // Dedicated service Workers used by production. These endpoints are kept
+    // explicit so this bot uses the tested APIs rather than bundled fallbacks.
+    "SOUNDCLOUD_API_URL": "https://soundcloud-worker.alighost5920.workers.dev",
+    "SHAZAM_API_URL": "https://shazam-worker.alighost5920.workers.dev",
+    "INSTA_API_URL": "https://insta-worker.alighost5920.workers.dev",
     "LRCLIB_API_URL": "https://lrclib.net",
 
     // Behaviour defaults (can be overridden live from the owner panel; those

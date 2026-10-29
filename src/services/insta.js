@@ -76,6 +76,7 @@ export class Insta {
       };
     });
     return {
+      source_url: url,
       caption: d.caption || "",
       author: d.author || {},
       thumbnail: d.thumbnail || null,
