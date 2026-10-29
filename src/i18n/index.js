@@ -133,6 +133,45 @@ const STR = {
     support_prompt: "لینک دکمهٔ پشتیبانی را بفرست:",
     btn_support: "💬 پشتیبانی",
     creator_text: "👨‍💻 <b>Ali Mousavi</b>\n📮 @{dev}",
+
+    // ── host-parity keys (Bot-Mousavi ui) ──────────────────────────────────
+    welcome_host: "🎧 **Music** | دستیار موزیک و دانلود\n\nسلام {name} 👋 فقط کافیه چیزی بفرستی؛ بقیه‌اش با من 👇\n\n🔎 **اسم خواننده یا آهنگ** ← فایل موزیک\n🎼 **یک خط از ترانه** ← پیدا کردن آهنگ\n🎤 **ویس، ویدیو یا فایل صوتی** ← شناسایی آهنگ\n📸 **لینک اینستاگرام** ← ویدیو + موزیکش\n\n> 💡 در هر چتی نام آهنگ را برای inline جستجو کن.\n> @{bot} اسم آهنگ",
+    menu_addgroup: "➕ افزودن به گروه",
+    menu_channel: "📢 کانال اصلی",
+    menu_lang: "🌐 زبان",
+    menu_help: "ℹ️ راهنما",
+    menu_support: "📞 پشتیبانی",
+    menu_admin: "🛠 مدیریت",
+    menu_invite: "👥 دعوت دوستان",
+    dl: "دانلود",
+    similar: "مشابه",
+    fav_add: "⭐ افزودن به علاقه‌مندی",
+    fav_del: "⭐ حذف از علاقه‌مندی",
+    favorites_title: "⭐ علاقه‌مندی‌های تو",
+    favorites_empty: "هنوز چیزی اضافه نکردی.",
+    history_title: "🕘 تاریخچهٔ اخیر",
+    history_empty: "تاریخچه‌ای نیست.",
+    ask_voice: "🎤 یک ویس، فایل صوتی یا ویدیو بفرست تا آهنگ را بشناسم:",
+    rate_limited: "⏳ کمی آرام‌تر! {wait} دیگر امتحان کن.",
+    error_service: "⚠️ سرویس موقتاً در دسترس نیست.",
+    no_results: "❌ چیزی پیدا نشد. عبارت دیگری امتحان کن.",
+    recognize_none: "❌ آهنگی شناسایی نشد. صدای واضح‌تری بفرست.",
+    recognize_badformat: "⚠️ این فرمت پشتیبانی نمی‌شود. لطفاً ویس، MP3 یا WAV بفرست.",
+    insta_none: "❌ محتوای عمومی‌ای برای این لینک پیدا نشد.",
+    ig_recognize: "شناسایی و دانلود آهنگ",
+    ig_search_sc: "جستجو در ساندکلود",
+    forcejoin_msg: "🔒 برای استفاده از ربات ابتدا در کانال عضو شو:",
+    btn_join: "عضویت در کانال",
+    btn_check: "عضو شدم",
+    not_member: "❌ هنوز عضو نیستی.",
+    join_not_member: "❌ هنوز عضو همهٔ کانال‌ها نیستی.",
+    support_ask: "📞 پیامت را برای پشتیبانی بنویس:",
+    lang_title: "🌐 زبان را انتخاب کن:",
+    about_text_host: "<b>Music</b>\nسازنده: {owner} ({user})\nپشتیبانی: {user}",
+    processing_status: "⏳ در حال پردازش…",
+    error_not_downloadable: "⚠️ دانلود این ترک مجاز نیست.",
+    error_too_large: "⚠️ فایل بیش از حد بزرگ است.",
+    admin_only: "⛔ فقط مالک.",
   },
 
   en: {
@@ -269,6 +308,28 @@ const STR = {
 /**
  * Translate `key` for `lang` (fallback fa -> en -> key). Interpolates {var}.
  */
+// ── host-parity helpers (Bot-Mousavi formatting) ────────────────────────────
+export function esc(s) {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+export function iso(s) { return `⁨${s}⁩`; }
+export function num(lang, n) {
+  const s = String(n == null ? 0 : n).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]);
+  return lang === "fa" ? s : String(n == null ? 0 : n);
+}
+export function vtruncate(s, n) {
+  s = String(s ?? "");
+  const chars = Array.from(s);
+  return chars.length > n ? chars.slice(0, n - 1).join("") + "…" : s;
+}
+export function truncateVisual(s, n) { return vtruncate(s, n); }
+export function dateFmt(lang, d) {
+  try { return new Intl.DateTimeFormat("fa-IR", { year: "numeric", month: "long", day: "numeric" }).format(d); } catch { return ""; }
+}
+export function dateGreg(lang, d) {
+  try { return d.toISOString().slice(0, 10); } catch { return ""; }
+}
+
 export function t(lang, key, vars = {}) {
   const l = STR[lang] ? lang : "fa";
   let s = STR[l][key] ?? STR.fa[key] ?? STR.en[key] ?? key;

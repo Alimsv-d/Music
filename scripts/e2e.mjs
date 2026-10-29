@@ -218,19 +218,19 @@ check("dedupes update_id", called("sendMessage").length <= 1);
 
 // 5) normal user panel denied
 calls.length = 0;
-await run(cb("pn:stats", 42));
+await run(cb("a:panel", 42));
 check("user denied panel (answered)", called("answerCallbackQuery").length >= 1);
 check("user NOT shown stats", !(last("editMessageText")?.params?.text || "").includes("آمار"));
 
 // 6) owner panel opens
 calls.length = 0;
-await run(privMsg("/panel", 8437014959));
+await run(privMsg("/admin", 8437014959));
 check("owner panel opens", (last("sendMessage")?.params?.text || "").includes("پنل"));
 
 // 7) owner stats
 calls.length = 0;
-await run(cb("pn:stats", 8437014959));
-check("owner stats shown", (last("editMessageText")?.params?.text || "").includes("آمار") || called("sendMessage").length >= 1);
+await run(cb("adm:stats", 8437014959));
+check("owner stats shown", (last("editMessageText")?.params?.text || last("sendMessage")?.params?.text || "").includes("آمار"));
 
 // 8) inline query -> audio results
 calls.length = 0;
@@ -293,19 +293,23 @@ await run(upd({ message: { message_id: uidc, from: { id: 42 }, chat: { id: 42, t
 check("m4a document recognized", shazamRecognizeCalls > 0);
 check("m4a delivered", !!last("sendAudio"), calls.filter((c) => /send|edit/.test(c.method)).map((c) => c.method).join(","));
 
-// 18) mp3 audio -> sliced decode -> delivered
+// 18) mp3 audio -> sliced decode -> delivered (fresh user to avoid recognize bucket)
 calls.length = 0;
-await run(upd({ message: { message_id: uidc, from: { id: 42 }, chat: { id: 42, type: "private" }, audio: { file_id: "FAUD1", duration: 10, file_size: 160958, mime_type: "audio/mpeg" } } }));
-check("mp3 recognized", shazamRecognizeCalls > 0);
-check("mp3 delivered", !!last("sendAudio"));
+await run(upd({ message: { message_id: uidc, from: { id: 43 }, chat: { id: 43, type: "private" }, audio: { file_id: "FAUD1", duration: 10, file_size: 160958, mime_type: "audio/mpeg" } } }));
+check("mp3 delivered", !!last("sendAudio"), calls.map((c) => c.method).join(","));
 
-// 19) instagram reel -> video sent, then music auto-delivered
+// 19) instagram reel -> video sent with control buttons; igx triggers recognize+deliver
 calls.length = 0;
 {
   const d0 = decCalls, s0 = shazamRecognizeCalls;
   await run(privMsg("https://www.instagram.com/reel/CACHEV/"));
   check("reel video sent", called("sendVideo").length >= 1 || called("sendMediaGroup").length >= 1);
-  check("reel music auto-delivered", !!last("sendAudio"), calls.map((c) => c.method).join(",") + ` | dec+${decCalls - d0} shz+${shazamRecognizeCalls - s0} | err: ${(JSON.stringify(await env.KV.get("err:log", "json") || []).slice(0, 300))}`);
+  calls.length = 0;
+  await run(cb("igx", 42));
+  check("reel recognized via igx", shazamRecognizeCalls > s0 && JSON.stringify(calls.map((c) => c.params || {})).includes("Goriz"), calls.map((c) => c.method).join(","));
+  calls.length = 0;
+  await run(cb("rdl:RWJpIEdvcml6", 42));
+  check("reel music delivered via rdl", !!last("sendAudio"), calls.map((c) => c.method).join(",") + ` | err: ${(JSON.stringify(await env.KV.get("err:log", "json") || []).slice(0, 300))}`);
 }
 
 // 20) every callback answered

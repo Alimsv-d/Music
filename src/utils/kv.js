@@ -183,6 +183,21 @@ export class Store {
   async put(key, val, ttl) { return J.put(this.kv, key, val, ttl); }
   async del(key) { return this.kv.delete(key).catch(() => {}); }
 
+  /** List [{key, value}] for a prefix (bounded to 5000 entries). */
+  async listWithPrefix(prefix) {
+    const out = [];
+    let cursor;
+    do {
+      const page = await this.kv.list({ prefix, cursor, limit: 1000 });
+      for (const k of page.keys) {
+        const v = await J.get(this.kv, k.name);
+        if (v !== null) out.push({ key: k.name.slice(prefix.length), value: v });
+      }
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+    return out;
+  }
+
   // ── internals ────────────────────────────────────────────────────────────
   async _collect(prefix, map) {
     const out = [];
