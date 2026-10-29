@@ -26,6 +26,7 @@ import { t } from "./i18n/index.js";
 import scWorker from "./services/workers/soundcloud.js";
 import shzWorker from "./services/workers/shazam.js";
 import igWorker from "./services/workers/insta.js";
+import decWorker from "./services/workers/decode.js";
 
 export default {
   async fetch(request, env, exec) {
@@ -40,7 +41,8 @@ export default {
       // /svc/sc/<rest>  -> SoundCloud worker (search/track/stream/download/f/…)
       // /svc/shz/<rest> -> Shazam worker (health/search/lyrics/recognize)
       // /svc/ig/<rest>  -> Instagram worker (resolve/download/health)
-      for (const [prefix, worker] of [["/svc/sc", scWorker], ["/svc/shz", shzWorker], ["/svc/ig", igWorker]]) {
+      // /svc/dec        -> in-worker audio decoder (chunked PCM for recognition)
+      for (const [prefix, worker] of [["/svc/sc", scWorker], ["/svc/shz", shzWorker], ["/svc/ig", igWorker], ["/svc/dec", decWorker]]) {
         if (path === prefix || path.startsWith(prefix + "/")) {
           const rewritten = new URL(request.url);
           rewritten.pathname = path === prefix ? "/" : path.slice(prefix.length);

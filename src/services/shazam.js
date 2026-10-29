@@ -19,6 +19,7 @@
 
 import { http, httpJson, HttpError } from "../utils/http.js";
 import { trackKey, toYear } from "./track.js";
+import { bytesToB64 } from "../utils/audioparse.js";
 
 export class Shazam {
   constructor(env) {
@@ -72,8 +73,7 @@ export class Shazam {
    * `bytes` = Uint8Array; `kind` = "wav" | "pcm" | "ogg" | other.
    * Returns normalized Track or null.
    */
-  async recognize(bytes, kind = "wav", filename = "audio.wav") {
-    let result;
+  async recognize(bytes, kind = "wav", filename = "audio.wav") {    let result;
     if (kind === "pcm") {
       // Send raw s16le 16kHz mono as base64 JSON.
       const b64 = bytesToB64(bytes);
@@ -104,6 +104,21 @@ export class Shazam {
     return this._normTrack(result.track, { confidence: result.confidence, lyrics: result.lyrics });
   }
 
+  /** Recognize from 16 kHz mono Int16 samples (from the in-worker decoder). */
+  async recognizePcm(samples, lyrics = true) {
+    const b64 = bytesToB64(new Uint8Array(samples.buffer, 0, samples.length * 2));
+    const data = await httpJson(`${this.base}/api/v1/recognize`, {
+      method: "POST",
+      timeout: Math.max(this.timeout, 30000),
+      retries: 1,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pcm_base64: b64, lyrics }),
+    });
+    const result = data.data || data;
+    if (!result || !result.found || !result.track) return null;
+    return this._normTrack(result.track, { confidence: result.confidence, lyrics: result.lyrics });
+  }
+
   /** Recognize from a remote URL — only works when BACKEND_URL is configured. */
   async recognizeUrl(url) {
     if (!this.backendUrl) return null;
@@ -125,13 +140,4 @@ export class Shazam {
       return Date.now() - t;
     } catch { return -1; }
   }
-}
-
-function bytesToB64(bytes) {
-  let bin = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-  }
-  return btoa(bin);
 }

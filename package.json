@@ -34,5 +34,11 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "@audio/decode-aac": "^1.6.0",
+    "@wasm-audio-decoders/opus-ml": "file:vendor/opus-ml-stub",
+    "mpg123-decoder": "^1.0.3",
+    "ogg-opus-decoder": "^1.7.5"
   }
 }

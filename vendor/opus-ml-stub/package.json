@@ -1,0 +1,10 @@
+{
+  "name": "@wasm-audio-decoders/opus-ml",
+  "version": "0.0.3",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "description": "ML-disabled stub (the 8 MB opus-ml model is never used: only loaded when enableMachineLearning:true, which the bot never sets). Keeps the Worker bundle well under the 3 MB free-plan limit. Vendor replacement of the upstream 0.0.3 build."
+}

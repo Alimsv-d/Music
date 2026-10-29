@@ -5,8 +5,10 @@
 import { t } from "../i18n/index.js";
 import { esc, extractInstagramUrl } from "../utils/text.js";
 import { kb, btn } from "../ui/keyboards.js";
-import { storePending } from "./search.js";
-import { resolveToDownloadable } from "./recognize.js";
+import { storePending, deliverTrack } from "./search.js";
+import { resolveToDownloadable, recognizeBytes } from "./recognize.js";
+
+const RECOG_MAX_BYTES = 30 * 1024 * 1024;
 
 export async function handleInstaLink(ctx, msg, url) {
   const chatId = msg.chat.id;
@@ -37,7 +39,10 @@ export async function handleInstaLink(ctx, msg, url) {
   // Prefer a video item (not its preview image) as the primary delivery.
   const videoItem = items.find((i) => i.type === "video" && i.has_audio);
   const primary = videoItem || items.find((i) => i.type === "video") || items[0];
+  // The service often reports has_audio:null — still try recognition on any video.
+  const recogItem = videoItem || items.find((i) => i.type === "video");
 
+  let sent = null;
   if (items.length > 1) {
     const group = items.slice(0, 10).map((it, i) => ({
       type: it.type === "video" ? "video" : "photo",
@@ -52,8 +57,8 @@ export async function handleInstaLink(ctx, msg, url) {
   }
 
   // Background: try to recognize the audio of the first video item.
-  if (videoItem && sent) {
-    ctx.exec.waitUntil(recognizeAndPatch(ctx, msg, sent, videoItem, lang));
+  if (recogItem && sent) {
+    ctx.exec.waitUntil(recognizeAndPatch(ctx, msg, sent, recogItem, lang));
   }
 }
 
@@ -71,29 +76,41 @@ function buildInstaCaption(ctx, resolved, lang) {
   return `${author ? "👤 " + esc(author) + "\n" : ""}${esc(cap)}\n\n${t(lang, "bot_tag", { bot: ctx.env.BOT_USERNAME })}`.trim();
 }
 
-/** Recognize audio from the sent video and patch the markup with a track button. */
+/**
+ * Background: pull the reel video bytes, decode+recognize via the bundled
+ * pipeline, and AUTO-DELIVER the matching SoundCloud track. If recognition
+ * works but delivery fails, patch the video's markup with a music button.
+ */
 async function recognizeAndPatch(ctx, msg, sent, videoItem, lang) {
   const chatId = msg.chat.id;
   const messageId = Array.isArray(sent) ? sent[0]?.message_id : sent.message_id;
   if (!messageId) return;
 
-  let tr = null;
   const mediaUrl = videoItem.url || videoItem.proxyUrl;
-  // Try recognize/url first (backend handles video->audio). Then direct.
-  if (ctx.env.SHAZAM_BACKEND_URL || ctx.shz.backendUrl) {
-    try { tr = await ctx.shz.recognizeUrl(mediaUrl); } catch {}
-  }
-  // If that fails and we can pull a small WAV/audio, decode isn't available;
-  // attempt recognizeUrl anyway via the insta proxy (some backends accept it).
-  if (!tr) {
-    try { tr = await ctx.shz.recognizeUrl(videoItem.proxyUrl || mediaUrl); } catch {}
-  }
-  if (!tr || !tr.title) return; // silently skip when not recognized
+  if (!mediaUrl) return;
 
-  const full = await resolveToDownloadable(ctx, tr);
-  const keyId = await storePending(ctx, full);
+  let bytes = null;
+  try {
+    const r = await fetch(mediaUrl);
+    if (r.ok) {
+      const len = +(r.headers.get("content-length") || 0);
+      if (len <= RECOG_MAX_BYTES) bytes = new Uint8Array(await r.arrayBuffer());
+    }
+  } catch (e) { }
+  if (!bytes) return;
 
-  // Patch the existing markup: append a music button.
+  const cacheKey = `recog:ig:${mediaUrl.slice(0, 256)}`;
+  const tr = await recognizeBytes(ctx, bytes, cacheKey).catch(() => null);
+  if (!tr || !tr.title) return;
+
+  const full = await resolveToDownloadable(ctx, tr).catch(() => null);
+  if (full && full.streamUrl && full.artist) {
+    const delivered = await deliverTrack(ctx, msg, full, lang).catch(() => null);
+    if (delivered) return;
+  }
+
+  // Fallback: patch the video's markup with a "add this track" button.
+  const keyId = await storePending(ctx, full || tr);
   const existing = kb([[{ text: "📢 " + (ctx.env.OWNER_USERNAME || "channel"), url: `https://t.me/${(ctx.env.OWNER_USERNAME || "AliMsvD").replace(/^@/, "")}` }]]);
   existing.inline_keyboard.unshift([btn(t(lang, "add_track_btn", { artist: tr.artist || "", title: (tr.title || "").slice(0, 30) }), `act:rfind:${keyId}`)]);
   await ctx.tg.editMessageReplyMarkup(chatId, messageId, existing).catch(() => {});
