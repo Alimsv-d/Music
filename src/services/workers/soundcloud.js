@@ -661,7 +661,7 @@ const STR = {
     howB: "این سرویس از API غیررسمی SoundCloud استفاده می‌کند؛ نام آهنگ یا هنرمند را جستجو کنید، پیش‌نمایش بشنوید و دانلود کنید. هیچ فایلی روی سرور ذخیره نمی‌شود.",
     apiT: "مستندات API", faqT: "سؤالات متداول", termsT: "قوانین",
     termsB: "این سرویس از API غیررسمی SoundCloud استفاده می‌کند و ممکن است بدون اطلاع از کار بیفتد. هیچ فایلی میزبانی یا ذخیره نمی‌شود و حق نشر هر اثر متعلق به صاحب آن است.",
-    foot: "ساخته‌شده توسط علی موسوی (AliMsvD)", lang: "English",
+    foot: "ساخته‌شده توسط علی موسوی (AliMsvD)", switchTo: "English",
     errT: "کدهای خطا", code: "کد", mean: "معنی",
     faq: [["چطور دانلود می‌کند؟","برای ترک‌هایی با فایل مستقیم، همان فایل را می‌گیرید؛ برای ترک‌های فقط‌استریم، بخش‌های استریم به یک فایل صوتی می‌چسبند."],
           ["چرا دانلود بعضی آهنگ‌های بلند متفاوت است؟","روی پلن رایگان Cloudflare هر درخواست سقف subrequest دارد؛ آهنگ‌های بلند استریمی در خود مرورگر شما بخش‌به‌بخش دانلود و به یک فایل می‌چسبند."],
@@ -680,7 +680,7 @@ const STR = {
     howB: "Uses the unofficial SoundCloud API; search a track or artist, preview it and download it. Nothing is stored on the server.",
     apiT: "API Docs", faqT: "FAQ", termsT: "Terms",
     termsB: "Uses the unofficial SoundCloud API and may break without notice. No files are hosted or stored; copyright belongs to the owners.",
-    foot: "Built by Ali Mousavi (AliMsvD)", lang: "فارسی",
+    foot: "Built by Ali Mousavi (AliMsvD)", switchTo: "فارسی",
     errT: "Error codes", code: "Code", mean: "Meaning",
     faq: [["How does downloading work?","Tracks with a direct file are fetched as-is; stream-only tracks are assembled into an audio file from stream segments."],
           ["Why do some long tracks download differently?","Cloudflare's free plan caps subrequests per request; long stream-only tracks are fetched segment-by-segment in your browser and joined into one file."],
@@ -830,7 +830,7 @@ html[data-theme="dark"]{--bg:#0d0d12;--fg:#ececf2;--card:#17171f;--mut:#9aa0ae;-
 <header>
   <div class="brand"><span class="dot"></span>${esc(s.title)}</div>
   <div class="hbtns">
-    <a class="langb" href="?lang=${lang === "fa" ? "en" : "fa"}">${esc(s.lang)}</a>
+    <a class="langb" href="?lang=${lang === "fa" ? "en" : "fa"}">${esc(s.switchTo || s.lang)}</a>
     <button class="themeb" id="themeb" aria-label="theme">◐</button>
     <button class="burger" id="burger" aria-label="menu" aria-expanded="false">☰</button>
   </div>
