@@ -640,8 +640,16 @@ async function doRecognize(ctx, msg, target, lang) {
 async function doInsta(ctx, msg, url, lang) {
   const statusMsg = await status(ctx, msg.chat.id, t(lang, "processing_status"));
   let d = null;
-  try { d = await ctx.insta.resolve(url); } catch {}
-  if (!d || !(d.items || []).length) { await delMsg(ctx, msg.chat.id, statusMsg?.message_id); return reply(ctx, msg.chat.id, t(lang, "insta_none")); }
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3 && !d; attempt++) {
+    try { d = await ctx.insta.resolve(url); }
+    catch (e) { lastErr = e; if (attempt < 2) await new Promise((r) => setTimeout(r, 700 * (attempt + 1))); }
+  }
+  if (!d || !(d.items || []).length) {
+    await delMsg(ctx, msg.chat.id, statusMsg?.message_id);
+    const upstream = /UPSTREAM|502|TIMEOUT|unavailable/i.test(String(lastErr?.message || lastErr || ""));
+    return reply(ctx, msg.chat.id, upstream ? "⚠️ سرویس اینستاگرام موقتاً پاسخ نداد؛ چند ثانیه بعد دوباره همین لینک را بفرست." : t(lang, "insta_none"));
+  }
   const items = d.items.slice(0, 10);
   const hasVideo = items.some((i) => i.type === "video" || /video/i.test(i.mime || ""));
   const q = guessMusicQuery(d);

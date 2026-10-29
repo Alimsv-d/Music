@@ -24,7 +24,19 @@ export class Ctx {
     this.ownerId = String(env.OWNER_ID || "");
   }
 
-  /** Public base URL of this worker (for /dl/ signed links + webhook). */
+  async botUsername() {
+    if (this.env.BOT_USERNAME) return String(this.env.BOT_USERNAME).replace(/^@/, "");
+    const cached = await this.store.getCfg("bot_username").catch(() => null);
+    if (cached) return String(cached).replace(/^@/, "");
+    try {
+      const me = await this.tg.getMe();
+      const name = String(me?.username || "").replace(/^@/, "");
+      if (name) { await this.store.setCfg("bot_username", name); return name; }
+    } catch {}
+    return "SearcherMusiic_Bot";
+  }
+
+
   publicUrl(request) {
     if (this.env.PUBLIC_URL) return this.env.PUBLIC_URL.replace(/\/$/, "");
     if (request) return new URL(request.url).origin;

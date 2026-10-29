@@ -34,6 +34,9 @@ export default {
     const ctx = new Ctx(env, exec);
     ctx.request = request;
     ctx.bindOrigin(request);
+    if (!env.BOT_USERNAME) {
+      try { env.BOT_USERNAME = await ctx.botUsername(); } catch {}
+    }
 
     try {
       // ── bundled service routing (delegated by path prefix) ────────────────

@@ -32,6 +32,7 @@
     // Public, non-secret configuration. BOT_TOKEN / OWNER_ID are NOT here:
     // they are captured at Deploy-to-Cloudflare time (from .dev.vars.example)
     // or uploaded as Worker secrets in CI — see README §Deploy.
+    "BOT_USERNAME": "SearcherMusiic_Bot",
     "OWNER_USERNAME": "AliMsvD",
     "CREATOR_NAME": "Ali Mousavi",
     "BOT_NAME": "Music",

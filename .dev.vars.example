@@ -2,6 +2,10 @@
 # REQUIRED. Get it from @BotFather. Never commit the real value.
 BOT_TOKEN=1234567890:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
+# Bot username is resolved automatically from Telegram getMe; this optional
+# value is only for local UI previews.
+# BOT_USERNAME=SearcherMusiic_Bot
+
 # REQUIRED. Your numeric Telegram id (send /start to @userinfobot to see it).
 # Used for admin rights and to auto-derive WEBHOOK_SECRET / LINK_SECRET /
 # ADMIN_SETUP_KEY — with just these two values the bot fully activates itself.
