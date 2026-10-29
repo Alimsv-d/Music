@@ -159,10 +159,20 @@ const env = {
 };
 // Patch the KV binding to also serve `get`/`put` used by Store. MockKV already does.
 
-// exec context that runs waitUntil tasks inline-ish (fire and forget, tracked).
-const pending = [];
-const exec = { waitUntil: (p) => pending.push(Promise.resolve(p).catch((e) => { if (process.env.E2E_DEBUG) console.log("waitUntil ERR:", e?.stack || e); })) };
-const drain = async () => { await Promise.allSettled(pending.splice(0)); };
+// exec context that runs waitUntil tasks inline-ish (tracked & nested-safe):
+// tasks may register new waitUntil tasks while draining, so we loop until the
+// set is empty (mirrors workerd settling every registered promise).
+const pending = new Set();
+const exec = { waitUntil: (p) => {
+  const pr = Promise.resolve(p).catch((e) => { if (process.env.E2E_DEBUG) console.log("waitUntil ERR:", e?.stack || e); });
+  pending.add(pr);
+  pr.finally(() => pending.delete(pr));
+} };
+const drain = async () => {
+  for (let guard = 0; pending.size && guard < 100; guard++) {
+    await Promise.allSettled([...pending]);
+  }
+};
 
 let uidc = 1;
 const req = (update, secret = WEBHOOK_SECRET) => new Request("https://w.dev/webhook", {
