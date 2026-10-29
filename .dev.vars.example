@@ -2,6 +2,11 @@
 # REQUIRED. Get it from @BotFather. Never commit the real value.
 BOT_TOKEN=1234567890:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
+# REQUIRED. Your numeric Telegram id (send /start to @userinfobot to see it).
+# Used for admin rights and to auto-derive WEBHOOK_SECRET / LINK_SECRET /
+# ADMIN_SETUP_KEY — with just these two values the bot fully activates itself.
+OWNER_ID=8437014959
+
 # OPTIONAL — leave unset to auto-derive each from BOT_TOKEN+OWNER_ID (same
 # derivation the Deploy Button relies on). Set explicit values only if you
 # need to rotate them independently.

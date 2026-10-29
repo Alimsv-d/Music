@@ -83,7 +83,7 @@ jobs:
       - name: Upload runtime secrets to the worker
         run: |
           set -e
-          for s in BOT_TOKEN WEBHOOK_SECRET LINK_SECRET ADMIN_SETUP_KEY; do
+          for s in BOT_TOKEN WEBHOOK_SECRET LINK_SECRET ADMIN_SETUP_KEY OWNER_ID; do
             eval "v=\${$s:-}"
             if [ -n "$v" ]; then printf '%s' "$v" | npx wrangler secret put "$s"; fi
           done
