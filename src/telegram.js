@@ -15,6 +15,20 @@ export class TelegramError extends Error {
   }
 }
 
+// Deep-copy params and remove every `style` field inside reply_markup
+// inline_keyboards (callback + url + switch_inline buttons alike).
+function stripButtonStyles(params) {
+  const p = JSON.parse(JSON.stringify(params));
+  const rows = p?.reply_markup?.inline_keyboard;
+  if (Array.isArray(rows)) {
+    for (const row of rows) {
+      if (!Array.isArray(row)) continue;
+      for (const b of row) if (b && typeof b === "object" && "style" in b) delete b.style;
+    }
+  }
+  return p;
+}
+
 export class Tg {
   /**
    * @param {object} env  Worker env (BOT_TOKEN, TELEGRAM_API_BASE, KV…)
@@ -57,6 +71,12 @@ export class Tg {
 
     if (!data.ok) {
       const desc = data.description || `HTTP ${res.status}`;
+      // Bot API `style` (primary/success/danger) is new: if the deployment
+      // rejects it, drop every style field from the keyboard and retry once.
+      if (!opts._strippedStyle && /style/i.test(desc) && params.reply_markup) {
+        const retryParams = stripButtonStyles(params);
+        return this.call(method, retryParams, { ...opts, _strippedStyle: true });
+      }
       const retryAfter = data.parameters?.retry_after || 0;
       const err = new TelegramError(desc, { code: data.error_code || res.status, retryAfter, method });
       // Mark user/chat inactive on 403.
