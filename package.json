@@ -18,7 +18,8 @@
   },
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "node scripts/ensure-kv.mjs && wrangler deploy",
+    "deploy": "wrangler deploy",
+    "kv:init": "node scripts/ensure-kv.mjs",
     "setup": "node scripts/setup.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
