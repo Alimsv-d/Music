@@ -491,7 +491,7 @@ async function start(ctx, msg, args, lang, isGroup) {
   if (args.startsWith("ig_")) {
     const q = unq64(args.slice(3));
     const d = await ctx.sc.search(q, 1, 3).catch(() => null);
-    const tr = d?.results?.[0];
+    const tr = (Array.isArray(d) ? d : d?.results || [])[0];
     if (tr) return runDownload(ctx, msg, tr, lang);
     return showScreen(ctx, msg.chat.id, null, "menu", { uid });
   }
@@ -603,7 +603,7 @@ async function doLyrics(ctx, msg, q, lang) {
   if (w) return reply(ctx, msg.chat.id, t(lang, "rate_limited", { wait: fmtWait(w) }));
   try {
     const d = await ctx.shz.searchText(q, 4, true);
-    const card = d?.artist ? d : d?.results?.[0];
+    const card = Array.isArray(d) ? d[0] : (d?.artist ? d : d?.results?.[0]);
     if (card) {
       const lyr = await ctx.lyr.get(card.artist, card.title).catch(() => null);
       if (lyr) return ctx.tg.sendMessage(msg.chat.id, `🎼 <b>${escH(card.title)}</b>\n\n${escH(String(lyr)).slice(0, 3800)}`);
