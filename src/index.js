@@ -83,6 +83,7 @@ export default {
       if (path === "/" || path === "") return statusPage(request, env);
       if (path === "/health") return healthCheck(ctx);
       if (path === "/setup") return setupRoute(request, env, ctx, url);
+      if (path === "/dbg") return dbgRoute(ctx, url);
       if (path === "/webhook" && request.method === "POST") return webhook(request, env, exec, ctx);
       if (path.startsWith("/dl/")) return dlProxy(ctx, path, request);
       return new Response("not found", { status: 404 });
@@ -255,6 +256,32 @@ async function runSetup(request, env, ctx, url) {
   }
   if (report.ok) await ctx.store.setCfg("activated", { at: Date.now(), url: expectedWebhook });
   return json(report, report.ok ? 200 : 500);
+}
+
+// ── /dbg ─────────────────────────────────────────────────────────────────────
+// Owner-key-guarded state dump for remote diagnosis. Uses the same derived
+// ADMIN_SETUP_KEY as /setup; exposes config/state only — never bot secrets.
+async function dbgRoute(ctx, url) {
+  const key = url.searchParams.get("key") || "";
+  const adminKey = await secret(ctx.env, "ADMIN_SETUP_KEY");
+  if (!adminKey || !timingSafeEqualStr(key, adminKey)) return json({ ok: false, error: "forbidden" }, 403);
+  const uid = url.searchParams.get("uid") || "";
+  const out = { ok: true, time: new Date().toISOString() };
+  const safe = async (label, fn) => { try { out[label] = await fn(); } catch (e) { out[label] = `ERR:${e?.message}`; } };
+  await safe("activated", () => ctx.store.getCfg("activated"));
+  await safe("settings_global", () => ctx.store.get("settings:global"));
+  await safe("settings_features", () => ctx.store.get("settings:features"));
+  await safe("cfg_inline", () => ctx.store.getCfg("inline"));
+  await safe("cfg_maintenance", () => ctx.store.getCfg("maintenance"));
+  await safe("errors", () => ctx.store.getErrors());
+  await safe("stats_searches", () => ctx.store.getStatTotal("searches"));
+  await safe("stats_downloads", () => ctx.store.getStatTotal("downloads"));
+  if (uid) {
+    await safe("user", () => ctx.store.getUser(uid));
+    await safe("history", async () => ((await ctx.store.getHistory(uid)) || []).slice(-5));
+    await safe("state", () => ctx.store.get(`state:${uid}`));
+  }
+  return json(out);
 }
 
 // ── /health ───────────────────────────────────────────────────────────────────
