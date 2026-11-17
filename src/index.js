@@ -276,6 +276,11 @@ async function dbgRoute(ctx, url) {
   await safe("errors", () => ctx.store.getErrors());
   await safe("stats_searches", () => ctx.store.getStatTotal("searches"));
   await safe("stats_downloads", () => ctx.store.getStatTotal("downloads"));
+  // env diagnosis: key names only (never values) + resolved service bases.
+  out.env_keys = Object.keys(ctx.env || {}).sort();
+  out.sc_base = ctx.sc.base;
+  out.shz_base = ctx.shz.base;
+  out.ig_base = ctx.insta.base;
   if (uid) {
     await safe("user", () => ctx.store.getUser(uid));
     await safe("history", async () => ((await ctx.store.getHistory(uid)) || []).slice(-5));
