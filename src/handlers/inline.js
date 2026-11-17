@@ -42,11 +42,12 @@ export async function handleInlineQuery(ctx, iq) {
     return ctx.tg.answerInlineQuery(iq.id, results, { cache_time: 30, is_personal: true });
   }
 
-  // Search (page derived from offset).
+  // Search (page derived from offset). Ask for 3× the page size because the
+  // MP3-only rule below may drop m4a-only tracks; pagination is per-sc-page.
   const page = Math.floor(offset / PAGE) + 1;
   let items = [];
   try {
-    items = await ctx.sc.search(q, page, PAGE);
+    items = await ctx.sc.search(q, page, PAGE * 3);
   } catch (e) {
     await ctx.store.logError({ where: "inline.search", msg: e.message });
   }
@@ -54,7 +55,8 @@ export async function handleInlineQuery(ctx, iq) {
 
   const base = ctx.publicUrl(ctx.request);
   const results = [];
-  for (const tr of items.slice(0, PAGE)) {
+  for (const tr of items) {
+    if (results.length >= PAGE) break;
     const fileId = await ctx.store.getTrackFileId(tr.key);
     if (fileId) {
       results.push({
@@ -65,7 +67,23 @@ export async function handleInlineQuery(ctx, iq) {
       });
       continue;
     }
-    if (!tr.downloadUrl) continue;
+    // MP3-only rule: inline audio must be a real mp3 — either a cached
+    // file_id (Telegram-transcoded mp3) or a track the SC worker serves as
+    // native mp3 (hasMp3). m4a-only tracks become an article result that
+    // routes the user to the bot's private transcode flow instead.
+    if (!tr.hasMp3) {
+      results.push({
+        type: "article",
+        id: `m${tr.id}`,
+        title: `${tr.artist ? tr.artist + " – " : ""}${tr.title}`.slice(0, 64),
+        description: t(lang, "inline_mp3_hint"),
+        input_message_content: {
+          message_text: `${tr.artist ? tr.artist + " – " : ""}${tr.title}\n${t(lang, "inline_mp3_cta", { bot: ctx.env.BOT_USERNAME })}`,
+          reply_markup: { inline_keyboard: [[{ text: t(lang, "btn_get_mp3"), url: `https://t.me/${ctx.env.BOT_USERNAME}` }]] },
+        },
+      });
+      continue;
+    }
     const signed = await signLink(await secret(ctx.env, "LINK_SECRET"), `sc:${tr.id}`, 3600);
     results.push({
       type: "audio",
@@ -78,7 +96,7 @@ export async function handleInlineQuery(ctx, iq) {
     });
   }
 
-  const next_offset = items.length >= PAGE ? String(offset + PAGE) : "";
+  const next_offset = results.length >= PAGE ? String(offset + PAGE) : "";
   await ctx.tg.answerInlineQuery(iq.id, results.slice(0, 50), {
     cache_time: 60,
     is_personal: false,

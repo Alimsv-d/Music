@@ -8,9 +8,9 @@
 //   POST /svc/dec  { codec:"opus"|"aac"|"mp3", head?, asc?, skip?, data }
 //     -> { ok:true, rate:16000, samples, pcm }
 
-import { OggOpusDecoder } from "ogg-opus-decoder";
-import aacDecode, { decoder as aacDecoder } from "@audio/decode-aac";
-import { MPEGDecoder } from "mpg123-decoder";
+import { OggOpusDecoder } from "../../wasmshims/ogg-opus-decoder.js";
+import aacDecode, { decoder as aacDecoder } from "../../../vendor/decode-aac-worker/decode-aac.js";
+import { MPEGDecoder } from "../../wasmshims/mpg123-decoder.js";
 import { toMono16k, bytesToB64, b64ToBytes } from "../../utils/audioparse.js";
 
 const TARGET_RATE = 16000;

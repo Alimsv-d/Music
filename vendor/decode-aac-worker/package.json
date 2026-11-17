@@ -1,0 +1,7 @@
+{
+  "name": "@vendored/decode-aac",
+  "version": "1.6.0-worker",
+  "type": "module",
+  "main": "decode-aac.js",
+  "private": true
+}

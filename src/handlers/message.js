@@ -6,6 +6,8 @@ import { t, esc, iso, num, vtruncate, truncateVisual, dateFmt, dateGreg } from "
 import { kb, btn, G, B, R, URLB, inlineBtn } from "../ui/keyboards.js";
 import { normalize, similarity, extractInstagramUrl, extractSoundCloudUrl } from "../utils/text.js";
 import { pickMedia } from "./recognize.js";
+import { deliverMp3 } from "./mp3.js";
+import { rlCheck, fmtWait } from "./rate.js";
 
 // ── tiny helpers ────────────────────────────────────────────────────────────
 const SEARCH_PAGE = 10;
@@ -22,7 +24,7 @@ function chooseSoundCloudMatch(items, artist, title) {
   const target = normalize(`${artist || ""} ${title || ""}`);
   const scored = list.map((tr) => ({ tr, score: Math.max(similarity(target, `${tr.artist || ""} ${tr.title || ""}`), similarity(title || "", tr.title || ""), similarity(artist || "", tr.artist || "")) }))
     .filter((x) => x.tr && x.score >= 0.55)
-    .sort((a, b) => (b.score - a.score) || Number(b.tr.downloadable) - Number(a.tr.downloadable) || (b.tr.plays || 0) - (a.tr.plays || 0));
+    .sort((a, b) => (b.score - a.score) || Number(b.tr.hasMp3) - Number(a.tr.hasMp3) || Number(b.tr.downloadable) - Number(a.tr.downloadable) || (b.tr.plays || 0) - (a.tr.plays || 0));
   return scored.find((x) => x.tr.downloadable || x.tr.streamable) ?.tr || scored[0]?.tr || null;
 }
 function fmtDur(ms) { if (!ms) return ""; const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
@@ -83,9 +85,7 @@ async function pushHist(ctx, uid, tr) {
   await H.set(ctx, "history", uid, l.slice(-50));
 }
 
-// ── rate limit (host buckets; per-user KV windows + escalation) ─────────────
-const BUCKETS = { action: { limit: 8, window: 10 }, search: { limit: 1, window: 2 }, download: { limit: 6, window: 60 }, recognize: { limit: 4, window: 60 }, group: { limit: 20, window: 60 }, ticket: { limit: 3, window: 3600 } };
-const PENALTIES = [60, 600, 3600, 86400];
+// ── rate limit buckets live in handlers/rate.js (shared with mp3 delivery) ──
 const botIdentity = new Map();
 async function isReplyToThisBot(ctx, msg) {
   const from = msg.reply_to_message?.from;
@@ -102,27 +102,7 @@ async function groupAddressed(ctx, msg, text) {
   const botName = String(ctx.env.BOT_USERNAME || "").replace(/^@/, "").toLowerCase();
   return Boolean((botName && text.toLowerCase().includes(`@${botName}`)) || await isReplyToThisBot(ctx, msg));
 }
-async function rlCheck(ctx, uid, bucket) {
-  const role = await ctx.roleOf(uid);
-  if (role !== "user") return null;
-  const cfg = BUCKETS[bucket] || BUCKETS.action;
-  const now = Date.now();
-  const key = `rlx:${uid}:${bucket}`;
-  const cur = (await H.get(ctx, "rlx", `${uid}:${bucket}`)) || { n: 0, win: 0, pen: 0 };
-  if (cur.pen && now < cur.pen) return Math.ceil((cur.pen - now) / 1000);
-  if (cur.win !== Math.floor(now / (cfg.window * 1000))) { cur.win = Math.floor(now / (cfg.window * 1000)); cur.n = 0; }
-  cur.n++;
-  if (cur.n > cfg.limit) {
-    cur.pen = now + PENALTIES[Math.min((cur.penCount || 0), PENALTIES.length - 1)] * 1000;
-    cur.penCount = (cur.penCount || 0) + 1;
-    cur.n = 0;
-    await H.set(ctx, "rlx", `${uid}:${bucket}`, cur);
-    return Math.ceil((cur.pen - now) / 1000);
-  }
-  await H.set(ctx, "rlx", `${uid}:${bucket}`, cur);
-  return null;
-}
-function fmtWait(sec) { return sec >= 3600 ? `${Math.ceil(sec / 3600)} ساعت` : sec >= 60 ? `${Math.ceil(sec / 60)} دقیقه` : `${sec} ثانیه`; }
+// rlCheck/fmtWait moved to handlers/rate.js (mp3 delivery shares the buckets).
 
 // ── forced join (host semantics) ────────────────────────────────────────────
 const FJ_CACHE = new Map();
@@ -554,22 +534,13 @@ async function runDownload(ctx, msg, tr, lang) {
   let sent = null;
   if (fileId) { try { sent = await ctx.tg.sendAudio(msg.chat.id, { audio: fileId, caption, title, performer: artist, duration: dur, reply_markup: markup }); H.incrStat(ctx, "cache_hits"); } catch { fileId = null; } }
   if (!sent) {
-    const base = (ctx.env.SOUNDCLOUD_API_URL || `${ctx.publicUrl(ctx.request)}/svc/sc`).replace(/\/$/, "");
-    const slug = encodeURIComponent(((artist ? artist + " - " : "") + title).replace(/[\\/:*?"<>|]/g, " ").slice(0, 80) || "track");
-    const urls = [meta.downloadUrl, meta.streamUrl, `${base}/f/${sidOf(meta)}/${slug}.m4a`].filter(Boolean);
-    for (const url of urls) {
-      try {
-        sent = await ctx.tg.sendAudio(msg.chat.id, { audio: url, caption, title, performer: artist, duration: dur, reply_markup: markup });
-        const fid = sent?.audio?.file_id;
-        if (fid) { ctx.exec.waitUntil(ctx.store.putTrack(key, { file_id: fid, title, artist, duration_ms: meta.duration_ms })); break; }
-        if (sent?.message_id) delMsg(ctx, msg.chat.id, sent.message_id);
-        sent = null;
-      } catch { sent = null; }
-    }
-    if (!sent) {
-      const fb = kb([[URLB(t(lang, "dl_direct"), meta.downloadUrl || meta.pageUrl || `https://soundcloud.com`)]]);
-      sent = await ctx.tg.sendMessage(msg.chat.id, caption + "\n\n" + t(lang, "file_too_big_tg"), { reply_markup: fb });
-    }
+    // MP3-only delivery: native mp3 asset goes out as direct URLs; everything
+    // else (m4a-only tracks) goes through the host's signed transcode flow.
+    sent = await deliverMp3(ctx, { msg, tr: meta, lang, caption, title, artist, dur, markup, cacheKey: key });
+  }
+  if (!sent) {
+    const fb = kb([[URLB(t(lang, "dl_direct"), meta.downloadUrl || meta.pageUrl || `https://soundcloud.com`)]]);
+    sent = await ctx.tg.sendMessage(msg.chat.id, caption + "\n\n" + t(lang, "file_too_big_tg"), { reply_markup: fb });
   }
   const autoLyrics = await ctx.cfg("auto_lyrics", true);
   if (autoLyrics !== false && sent) ctx.exec.waitUntil(sendLyrics(ctx, msg.chat.id, meta, lang));

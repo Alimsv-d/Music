@@ -23,7 +23,7 @@
     "setup": "node scripts/setup.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "node scripts/e2e.mjs",
+    "e2e": "node --import ./scripts/loader-register.mjs scripts/e2e.mjs",
     "lint": "node scripts/lint.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
     "live": "node scripts/live-check.mjs"

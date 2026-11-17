@@ -13,7 +13,8 @@ function walk(dir) {
     if (!/\.(js|mjs)$/.test(e)) continue;
     try { execSync(`node --check "${p}"`, { stdio: "pipe" }); }
     catch (err) { console.log(`SYNTAX FAIL ${p}\n${err.stderr}`); bad++; }
-    // check relative imports resolve
+    // check relative imports resolve (wasm modules are compiled at bundle time
+    // by wrangler and by our node loader hooks — just verify the file exists)
     const src = readFileSync(p, "utf8");
     for (const m of src.matchAll(/from\s+["'](\.[^"']+)["']/g)) {
       const rel = m[1];

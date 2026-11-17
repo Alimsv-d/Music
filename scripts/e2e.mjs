@@ -28,8 +28,9 @@ const WORKER = "https://w.dev";
 const SHAZAM_UP = "https://shazam-worker.alighost5920.workers.dev";
 const SC_UP = "https://soundcloud-worker.alighost5920.workers.dev";
 const INSTA_UP = "https://insta-worker.alighost5920.workers.dev";
+const MP3SVC = "http://mp3svc.mock";
 const MEDIA = "http://media.mock";
-let scSearchCalls = 0, shazamRecognizeCalls = 0, decCalls = 0;
+let scSearchCalls = 0, shazamRecognizeCalls = 0, decCalls = 0, mp3EnqCalls = 0, mp3StatusCalls = 0;
 
 // Cache API stub with real match/put semantics (Map-backed).
 const cacheMap = new Map();
@@ -80,13 +81,40 @@ globalThis.fetch = async (url, opts = {}) => {
       duration_ms: 210000,
     } } });
   }
-  // SC search for the RECOGNIZED track ("Ebi Goriz") -> canned SC result so
-  // delivery works. Other searches keep hitting the real SoundCloud backend.
-  if (u.startsWith(`${SC_UP}/api/v1/search`) && safeJson(opts.body)?.query === "Ebi Goriz") {
-    scSearchCalls++;
-    return jsonResp({ ok: true, data: { found: true, results: [
-      { id: "85511979", title: "Goriz", artist: "Ebi", streamUrl: "https://w.dev/svc/sc/stream/85511979", downloadUrl: "https://w.dev/svc/sc/download/85511979", duration_ms: 210000 },
-    ] } });
+  // SC search intercepts keyed on the ?q= param (the adapter calls GET).
+  // The m4a fixture ("m4a only test") exercises the host transcode flow; the
+  // "ebi" mix feeds the inline menu deterministically; "Ebi Goriz" keeps the
+  // recognition-delivery path stable. All other searches hit the real backend.
+  if (u.startsWith(`${SC_UP}/api/v1/search`)) {
+    const q = new URL(u).searchParams.get("q") || "";
+    const canned = {
+      "Ebi Goriz": [{ id: "85511979", sid: "85511979", title: "Goriz", artist: "Ebi", streamUrl: "https://w.dev/svc/sc/stream/85511979", downloadUrl: "https://w.dev/svc/sc/download/85511979", duration_ms: 210000, hasMp3: true, downloadable: true }],
+      "m4a only test": [{ id: "999", sid: "999", title: "Only M4a Song", artist: "Maker", duration_ms: 200000, hasMp3: false, hasHls: true, downloadable: true }],
+      "ebi": [
+        { id: "85511979", sid: "85511979", title: "Goriz", artist: "Ebi", duration_ms: 210000, hasMp3: true, downloadable: true },
+        { id: "999", sid: "999", title: "Only M4a Song", artist: "Maker", duration_ms: 200000, hasMp3: false, hasHls: true, downloadable: true },
+      ],
+    }[q];
+    if (canned) return jsonResp({ ok: true, results: canned });
+  }
+  // SC track enrich for the canned numbers above (full ?id= API shape).
+  if (u.startsWith(`${SC_UP}/api/v1/track?id=`)) {
+    const id = u.split("id=")[1]?.split("&")[0];
+    const known = {
+      "85511979": { id: "85511979", sid: "85511979", title: "Goriz", artist: "Ebi", album: "Goriz", artwork: "https://is1-ssl.mzstatic.com/art.jpg", streamUrl: "https://w.dev/svc/sc/stream/85511979", downloadUrl: "https://w.dev/svc/sc/download/85511979", duration_ms: 210000, hasMp3: true },
+      "999": { id: "999", sid: "999", title: "Only M4a Song", artist: "Maker", artwork: "https://i1.sndcdn.com/n.jpg", streamUrl: "https://w.dev/svc/sc/stream/999", downloadUrl: "https://w.dev/svc/sc/download/999", duration_ms: 200000, hasMp3: false, hasHls: true },
+    };
+    if (known[id]) return jsonResp({ ok: true, track: known[id] });
+  }
+  // mp3svc host transcoder: enqueue accepted; status flips pending -> done.
+  if (u.startsWith(`${MP3SVC}/enqueue.php`)) {
+    mp3EnqCalls++;
+    return jsonResp({ ok: true, job: "e2ejob0001" });
+  }
+  if (u.startsWith(`${MP3SVC}/status.php`)) {
+    mp3StatusCalls++;
+    if (mp3StatusCalls >= 2) return jsonResp({ ok: true, state: "done", url: `/dl.php?job=e2ejob0001&sig=sig`, size: 12345 });
+    return jsonResp({ ok: true, state: "pending" });
   }
   // SC track enrich.
   if (u.match(/\/api\/v1\/track\/\d+/)) {
@@ -156,6 +184,10 @@ const env = {
   DEFAULT_LANG: "fa", PAGE_SIZE: "10", RESULT_TTL: "3600", RATE_LIMIT_PER_MIN: "20",
   API_TIMEOUT_MS: "8000", MAX_UPLOAD_MB: "50", SEARCH_CACHE_TTL: "300", TRACK_CACHE_TTL: "3600",
   DEFAULT_SUPPORT_URL: "https://t.me/AliMsvD",
+  MP3SVC_URL: MP3SVC,
+  MP3SVC_SECRET: "e2esecret",
+  // fast polling so the e2e does not wait 35s for the (stubbed) transcoder
+  MP3_POLL_BUDGET_MS: "2000", MP3_POLL_FIRST_WAIT_MS: "10", MP3_POLL_STEP_MS: "10",
 };
 // Patch the KV binding to also serve `get`/`put` used by Store. MockKV already does.
 
@@ -310,6 +342,23 @@ calls.length = 0;
   calls.length = 0;
   await run(cb("rdl:RWJpIEdvcml6", 42));
   check("reel music delivered via rdl", !!last("sendAudio"), calls.map((c) => c.method).join(",") + ` | err: ${(JSON.stringify(await env.KV.get("err:log", "json") || []).slice(0, 300))}`);
+}
+
+// 19b) m4a-only track -> search list -> pick -> host transcode -> MP3 delivered
+calls.length = 0; mp3EnqCalls = 0; mp3StatusCalls = 0;
+await run(privMsg("m4a only test", 45));
+const pickData = (last("sendMessage")?.params?.reply_markup?.inline_keyboard || [])
+  .flat().map((b) => b.callback_data).find((d) => d && d.startsWith("pick:"));
+if (pickData) await run(cb(pickData, 45));
+{
+  const allParams = JSON.stringify(calls.map((c) => c.params || {}));
+  check("search list offers pick button", !!pickData, pickData || "no pick button");
+  check("m4a-only enqueued to mp3svc", mp3EnqCalls >= 1, `${mp3EnqCalls} enqueue calls`);
+  check("m4a-only polled mp3svc", mp3StatusCalls >= 1, `${mp3StatusCalls} status calls`);
+  check("m4a-only shows transcoding status", allParams.includes("آماده") || allParams.includes("MP3 version"), "");
+  check("m4a-only delivered as mp3", !!last("sendAudio"), String(last("sendAudio")?.params?.audio || "").slice(0, 80));
+  check("delivered audio is the mp3svc url", String(last("sendAudio")?.params?.audio || "").startsWith(`${MP3SVC}/dl.php`), String(last("sendAudio")?.params?.audio || "").slice(0, 70));
+  check("never sends raw m4a url", !String(last("sendAudio")?.params?.audio || "").includes("/api/v1/download"));
 }
 
 // 20) every callback answered

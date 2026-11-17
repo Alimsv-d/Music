@@ -28,3 +28,11 @@ OWNER_ID=8437014959
 # SHAZAM_BACKEND_KEY=
 # Optional API key for the insta-worker if you secured it.
 # INSTA_API_KEY=
+
+# ── MP3-only delivery (host transcoder) ─────────────────────────────────────
+# For tracks without a native mp3 asset the bot submits them to this signed
+# host-side transcoder (enqueue.php + cron ffmpeg on your cPanel host) and
+# hands Telegram the finished MP3 URL. Leave both unset to fall back to a
+# clear "conversion unavailable" message for m4a-only tracks.
+# MP3SVC_URL=https://devcoder.ir/mp3svc
+# MP3SVC_SECRET=<same 48-hex value as ~/mp3svc/secret.php on your host>

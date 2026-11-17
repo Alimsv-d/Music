@@ -4,6 +4,7 @@ import { t } from "../i18n/index.js";
 import { esc, normalize, matchScore, splitArtistTitle, shortId, fmtDuration } from "../utils/text.js";
 import { trackList, trackActions, mainMenu, kb, btn, urlBtn } from "../ui/keyboards.js";
 import { trackKey } from "../services/track.js";
+import { deliverMp3 } from "./mp3.js";
 
 const HIGH_CONF = 0.82;   // deliver directly if a single result scores >= this
 const AMBIG = 0.55;       // below this -> "not found"
@@ -96,6 +97,7 @@ function compact(tr) {
     id: tr.id, source: tr.source, title: tr.title, artist: tr.artist,
     album: tr.album, year: tr.year, duration_ms: tr.duration_ms,
     artwork: tr.artwork, downloadUrl: tr.downloadUrl, streamUrl: tr.streamUrl, pageUrl: tr.pageUrl,
+    hasMp3: tr.hasMp3, sid: tr.sid,
   };
 }
 
@@ -134,39 +136,17 @@ export async function deliverTrack(ctx, msg, trackStub, lang, editCb) {
     }
   }
 
-  // 2) DIRECT URL-SEND only — zero bytes through the Worker. Candidates:
-  //   a) /f/<sid>/<slug>.mp3 — validated progressive file -> real `audio`.
-  //   b) tr.downloadUrl / tr.streamUrl — the worker's own media endpoints.
-  // If Telegram returns a non-audio (document) or errors, try the next URL;
-  // if all fail, reply with a direct-link button. Never buffer bytes here.
+  // 2) MP3-only delivery — native mp3 asset -> direct URL-send (zero bytes
+  //    through the Worker); m4a-only -> signed host transcode flow.
+  //    Anything that is not guaranteed MP3 is never handed to Telegram.
   if (!sent) {
-    const sid0 = String(tr.sid || tr.id || "").replace(/^sc_/, "");
-    const base = (ctx.env.SOUNDCLOUD_API_URL || `${ctx.publicUrl(ctx.request)}/svc/sc`).replace(/\/$/, "");
-    const slug = encodeURIComponent(((artist ? artist + " - " : "") + title).replace(/[\\/:*?"<>|]/g, " ").slice(0, 80) || "track");
-    const urls = [
-      sid0 && base ? `${base}/f/${sid0}/${slug}.mp3` : null,
-      tr.downloadUrl, tr.streamUrl,
-    ].filter(Boolean);
-    for (const url of urls) {
-      try {
-        sent = await ctx.tg.sendAudio(chatId, {
-          audio: url, caption, title, performer: artist,
-          duration: Math.round((tr.duration_ms || 0) / 1000), reply_markup: markup,
-        });
-        const fid = sent?.audio?.file_id;
-        if (fid) {
-          ctx.exec.waitUntil(ctx.store.putTrack(key, { file_id: fid, title, artist, duration_ms: tr.duration_ms }));
-          break;
-        }
-        // Telegram delivered it as a document/other — delete & try next URL.
-        if (sent && sent.message_id) { try { await ctx.tg.deleteMessage(chatId, sent.message_id); } catch (_) {} }
-        sent = null;
-      } catch (e) {
-        sent = null; // try next URL
-      }
-    }
+    sent = await deliverMp3(ctx, {
+      msg, tr, lang, caption, title, artist,
+      dur: Math.round((tr.duration_ms || 0) / 1000),
+      markup, cacheKey: key,
+    });
     if (!sent) {
-      // All URL-sends failed -> give the user a direct link (still no proxying).
+      // All delivery failed -> give the user a direct link (still no proxying).
       const fb = kb([[urlBtn(t(lang, "dl_direct"), tr.downloadUrl || tr.pageUrl)]]);
       sent = await ctx.tg.sendMessage(chatId, caption + "\n\n" + t(lang, "file_too_big_tg"), { reply_markup: fb });
     }
@@ -184,7 +164,7 @@ export async function deliverTrack(ctx, msg, trackStub, lang, editCb) {
 
 /** Fetch a fuller track record if we only have a compact stub. */
 async function enrich(ctx, stub) {
-  if (stub.album !== undefined && stub.artwork !== undefined && stub.title) return stub;
+  if (stub.album !== undefined && stub.artwork !== undefined && stub.title && stub.hasMp3 !== undefined) return stub;
   try {
     const full = await ctx.sc.track(stub.id);
     if (full) return { ...stub, ...full };

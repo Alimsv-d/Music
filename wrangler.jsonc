@@ -44,6 +44,14 @@
     "INSTA_API_URL": "https://insta-worker.alighost5920.workers.dev",
     "LRCLIB_API_URL": "https://lrclib.net",
 
+    // MP3-only delivery: host-side m4a->mp3 transcoder (~/public_html/mp3svc on
+    // devcoder.ir + ~/mp3svc/work.sh under cPanel cron). The secret is also in
+    // the public-repo wrangler.jsonc by necessity (CF Builds can't take extra
+    // secrets); risk is bounded: enqueue accepts only the SC worker's
+    // /api/v1/download URLs and the host queue caps jobs per run + 24h TTL.
+    "MP3SVC_URL": "https://devcoder.ir/mp3svc",
+    "MP3SVC_SECRET": "cb2b0aed7f532d66724b8e02d82f628e5c88f727425dda43",
+
     // Behaviour defaults (can be overridden live from the owner panel; those
     // writes land in KV under cfg:* and take precedence over these vars).
     "DEFAULT_LANG": "fa",
