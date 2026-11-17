@@ -278,6 +278,8 @@ async function dbgRoute(ctx, url) {
   await safe("errors", () => ctx.store.getErrors());
   await safe("stats_searches", () => ctx.store.getStatTotal("searches"));
   await safe("stats_downloads", () => ctx.store.getStatTotal("downloads"));
+  await safe("stats_recognitions", () => ctx.store.getStatTotal("rec"));
+  await safe("stats_updates", () => ctx.store.getStatTotal("updates"));
   // env diagnosis: key names only (never values) + resolved service bases.
   out.env_keys = Object.keys(ctx.env || {}).sort();
   out.sc_base = ctx.sc.base;
