@@ -28,6 +28,16 @@
     "crons": ["*/5 * * * *", "* * * * *"]
   },
 
+  // Service bindings to the sibling service Workers (same account). Requests
+  // to the external workers.dev hostnames from inside THIS worker 404 on the
+  // same-account zone registry, so the adapters dispatch through these
+  // bindings instead (see src/utils/http.js registerServiceRoutes).
+  "services": [
+    { "binding": "SC_SVC", "service": "soundcloud-worker" },
+    { "binding": "SHZ_SVC", "service": "shazam-worker" },
+    { "binding": "IG_SVC", "service": "insta-worker" }
+  ],
+
   "vars": {
     // Public, non-secret configuration. BOT_TOKEN / OWNER_ID are NOT here:
     // they are captured at Deploy-to-Cloudflare time (from .dev.vars.example)

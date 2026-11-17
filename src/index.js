@@ -12,6 +12,7 @@ import { Ctx } from "./ctx.js";
 import { verifyLink } from "./utils/crypto.js";
 import { timingSafeEqualStr } from "./utils/crypto.js";
 import { secret } from "./utils/secrets.js";
+import { serviceFetch } from "./utils/http.js";
 import { handleMessage, handleCallback } from "./handlers/message.js";
 import { handleInlineQuery, handleChosenInline } from "./handlers/inline.js";
 import { setupWebhook, runBroadcastChunk } from "./handlers/admin.js";
@@ -172,7 +173,8 @@ async function dlProxy(ctx, path, request) {
   let res = null;
   for (const upstream of candidates) {
     try {
-      const candidate = await fetch(upstream, { headers: requestHeaders });
+      // serviceFetch routes same-account workers.dev via the SC binding.
+      const candidate = await serviceFetch(upstream, { headers: requestHeaders });
       const ct = (candidate.headers.get("content-type") || "").toLowerCase();
       // /download can return a JSON/HLS manifest for browser-mode tracks.
       if ((!candidate.ok && candidate.status !== 206) || ct.includes("application/json") || ct.includes("mpegurl") || ct.includes("text/plain")) continue;

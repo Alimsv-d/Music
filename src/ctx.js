@@ -9,6 +9,7 @@ import { SoundCloud } from "./services/soundcloud.js";
 import { Shazam } from "./services/shazam.js";
 import { Insta } from "./services/insta.js";
 import { Lyrics } from "./services/lyrics.js";
+import { registerServiceRoutes, serviceFetch } from "./utils/http.js";
 import { t } from "./i18n/index.js";
 
 export class Ctx {
@@ -22,6 +23,19 @@ export class Ctx {
     this.insta = new Insta(env);
     this.lyr = new Lyrics(env);
     this.ownerId = String(env.OWNER_ID || "");
+    // Route service-adapter traffic through Service Bindings when present —
+    // same-account workers.dev fetches 404 via the public hostname.
+    const pairs = [
+      [env.SOUNDCLOUD_API_URL, env.SC_SVC],
+      [env.SHAZAM_API_URL, env.SHZ_SVC],
+      [env.INSTA_API_URL, env.IG_SVC],
+      [env.LEGACY_INSTA_API_URL, env.IG_SVC],
+    ].filter(([base, b]) => base && b);
+    if (pairs.length) {
+      const local = [...pairs];
+      registerServiceRoutes(local);
+      this._serviceFetch = serviceFetch;
+    }
   }
 
   async botUsername() {

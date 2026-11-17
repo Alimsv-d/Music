@@ -13,6 +13,22 @@ export class HttpError extends Error {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Service transport: same-account *.workers.dev calls from inside a Worker are
+// unreliable (the zone's registry 404s them), so callers that own Service
+// Bindings register them here and every request to a registered base is
+// dispatched through binding.fetch() instead of the public hostname.
+let serviceRoutes = [];
+/** Register [base, binding] pairs; URLs under base go through the binding. */
+export function registerServiceRoutes(pairs) { serviceRoutes = pairs || []; }
+
+/** fetch() that honors registered service bindings, else the global fetch. */
+export function serviceFetch(url, opts = {}) {
+  for (const [base, binding] of serviceRoutes) {
+    if (String(url).startsWith(base)) return binding.fetch(url, opts);
+  }
+  return fetch(url, opts);
+}
+
 /**
  * fetch with a hard timeout and retry/backoff on network errors + 5xx/429.
  * opts: { timeout, retries, backoff, headers, method, body }
@@ -32,7 +48,7 @@ export async function http(url, opts = {}) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeout);
     try {
-      const res = await fetch(url, {
+      const res = await serviceFetch(url, {
         method,
         headers,
         body,
