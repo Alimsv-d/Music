@@ -7,6 +7,7 @@ import { sniffAudio } from "../utils/audio.js";
 import { parseOggPages, oggChunkRanges, parseMp4Audio, bytesToB64, b64ToBytes } from "../utils/audioparse.js";
 import { kb, btn, urlBtn } from "../ui/keyboards.js";
 import { storePending, deliverTrack } from "./search.js";
+import decWorker from "../services/workers/decode.js";
 
 const MAX_TG_FILE = 20 * 1024 * 1024; // bot API getFile limit
 
@@ -200,11 +201,16 @@ async function decodeToPcm(ctx, bytes, kind) {
 
 async function decCall(url, body) {
   try {
-    const r = await fetch(url, {
+    // In-process dispatch: /svc/dec is bundled in this same Worker, and a
+    // self-subrequest to the public hostname gets 404'd by the same-account
+    // zone registry. Calling the service module directly is instant and has
+    // no network hop at all.
+    const req = new Request(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+    const r = await decWorker.fetch(req);
     if (!r.ok) return null;
     return await r.json();
   } catch { return null; }

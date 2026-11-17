@@ -169,6 +169,11 @@ function tgResult(method, p) {
 }
 const jsonResp = (o) => new Response(JSON.stringify(o), { headers: { "content-type": "application/json" } });
 
+// /svc/dec is now called IN-PROCESS by recognize.js (no self-fetch), so wrap
+// the bundled decoder module to keep counting decode invocations.
+const decOrigFetch = decWorker.fetch.bind(decWorker);
+decWorker.fetch = (req, ...rest) => { decCalls++; return decOrigFetch(req, ...rest); };
+
 // ── env + ctx ────────────────────────────────────────────────────────────────
 const env = {
   KV: new MockKV(),
