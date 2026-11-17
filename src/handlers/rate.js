@@ -2,7 +2,7 @@
 // behavior: per-user KV windows with increasing penalty waits).
 
 // ── rate limit (host buckets; per-user KV windows + escalation) ─────────────
-export const BUCKETS = { action: { limit: 8, window: 10 }, search: { limit: 1, window: 2 }, download: { limit: 6, window: 60 }, recognize: { limit: 4, window: 60 }, group: { limit: 20, window: 60 }, ticket: { limit: 3, window: 3600 }, mp3convert: { limit: 2, window: 300 } };
+export const BUCKETS = { action: { limit: 8, window: 10 }, search: { limit: 1, window: 2 }, download: { limit: 6, window: 60 }, recognize: { limit: 4, window: 60 }, group: { limit: 20, window: 60 }, ticket: { limit: 3, window: 3600 }, mp3convert: { limit: 6, window: 300 } };
 const PENALTIES = [60, 600, 3600, 86400];
 
 const H = {

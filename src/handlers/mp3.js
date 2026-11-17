@@ -82,7 +82,7 @@ export async function pollMp3Job(ctx, job, opts = {}) {
   const base = mp3Base(ctx);
   const secret = ctx.env.MP3SVC_SECRET;
   if (!base || !secret || !job) return { state: "failed", error: "unconfigured" };
-  const { budgetMs = +ctx.env.MP3_POLL_BUDGET_MS || 150000, firstWaitMs = +ctx.env.MP3_POLL_FIRST_WAIT_MS || 35000, stepMs = +ctx.env.MP3_POLL_STEP_MS || 8000 } = opts;
+  const { budgetMs = +ctx.env.MP3_POLL_BUDGET_MS || 150000, firstWaitMs = +ctx.env.MP3_POLL_FIRST_WAIT_MS || 12000, stepMs = +ctx.env.MP3_POLL_STEP_MS || 6000 } = opts;
   const sig = await hmacHex(secret, job);
   const statusUrl = `${base}/status.php?job=${job}&sig=${sig}`;
   await sleep(firstWaitMs);
