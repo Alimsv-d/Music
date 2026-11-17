@@ -96,16 +96,20 @@ export async function recognizeMedia(ctx, media, chatId, lang) {
  */
 export async function recognizeBytes(ctx, bytes, cacheKey) {
   const kind = sniffAudio(bytes);
-  if (!kind) return null;
+  const dbg = (m) => ctx.exec?.waitUntil(ctx.store.logError({ where: "dbg.recog", msg: `${kind || "none"} ${m}` }).catch(() => {}));
+  if (!kind) { dbg("sniff-none"); return null; }
 
   let tr = null;
   if (kind === "wav") {
     // WAV goes straight to the Shazam worker.
-    tr = await ctx.shz.recognize(bytes, "wav", "audio.wav").catch(() => null);
+    tr = await ctx.shz.recognize(bytes, "wav", "audio.wav").catch((e) => { dbg(`wav-err ${e?.message}`); return null; });
+    dbg(`wav found=${!!tr}`);
   } else {
     const pcm = await decodeToPcm(ctx, bytes, kind);
+    dbg(`pcm=${pcm ? pcm.length : "null"}`);
     if (pcm && pcm.length) {
-      tr = await ctx.shz.recognizePcm(pcm).catch(() => null);
+      tr = await ctx.shz.recognizePcm(pcm).catch((e) => { dbg(`pcm-err ${e?.message}`); return null; });
+      dbg(`recog found=${!!tr} ${tr ? tr.title : ""}`);
     }
   }
   if (cacheKey && ctx.exec) {
