@@ -584,8 +584,6 @@ async function doLyrics(ctx, msg, q, lang) {
 }
 
 async function doRecognize(ctx, msg, target, lang) {
-  const media = pickMedia(target);
-  ctx.exec?.waitUntil(ctx.store.logError({ where: "dbg.recog", msg: `start kind=${media ? (msg.voice ? "voice" : msg.video ? "video" : "media") : "none"} size=${media?.file_size || 0}` }).catch(() => {}));
   const w = await rlCheck(ctx, msg.from?.id, "recognize");
   if (w) return reply(ctx, msg.chat.id, t(lang, "rate_limited", { wait: fmtWait(w) }));
   const statusMsg = await status(ctx, msg.chat.id, t(lang, "recognizing"));

@@ -96,20 +96,20 @@ export async function recognizeMedia(ctx, media, chatId, lang) {
  */
 export async function recognizeBytes(ctx, bytes, cacheKey) {
   const kind = sniffAudio(bytes);
-  const dbg = (m) => ctx.exec?.waitUntil(ctx.store.logError({ where: "dbg.recog", msg: `${kind || "none"} ${m}` }).catch(() => {}));
-  if (!kind) { dbg("sniff-none"); return null; }
+  if (!kind) return null;
 
   let tr = null;
   if (kind === "wav") {
     // WAV goes straight to the Shazam worker.
-    tr = await ctx.shz.recognize(bytes, "wav", "audio.wav").catch((e) => { dbg(`wav-err ${e?.message}`); return null; });
-    dbg(`wav found=${!!tr}`);
+    tr = await ctx.shz.recognize(bytes, "wav", "audio.wav").catch(() => null);
   } else {
-    const pcm = await decodeToPcm(ctx, bytes, kind);
-    dbg(`pcm=${pcm ? pcm.length : "null"}`);
+    let pcm = await decodeToPcm(ctx, bytes, kind);
+    if (!pcm || !pcm.length) {
+      // The intro may be silent or talking — retry from ~35% into the file.
+      pcm = await decodeToPcm(ctx, bytes, kind, 0.35);
+    }
     if (pcm && pcm.length) {
-      tr = await ctx.shz.recognizePcm(pcm).catch((e) => { dbg(`pcm-err ${e?.message}`); return null; });
-      dbg(`recog found=${!!tr} ${tr ? tr.title : ""}`);
+      tr = await ctx.shz.recognizePcm(pcm).catch(() => null);
     }
   }
   if (cacheKey && ctx.exec) {
@@ -120,7 +120,7 @@ export async function recognizeBytes(ctx, bytes, cacheKey) {
 }
 
 const RECOG_TTL = 6 * 3600;
-const MAX_DECODE_SECONDS = 15;
+const MAX_DECODE_SECONDS = 24;
 const OPUS_PACKETS_PER_CHUNK = 50;   // ~1 s per chunk
 const AAC_SECONDS_PER_CHUNK = 0.6;
 const MP3_SECONDS_PER_CHUNK = 0.6;
@@ -128,9 +128,11 @@ const AAC_WARMUP_SECONDS = 0.5;
 
 /**
  * Decode OGG(Opus) / MP4,MOV,M4A(AAC) / MP3 to 16 kHz mono Int16, in
- * CPU-budgeted self-subrequests to /svc/dec. Returns Int16Array or null.
+ * CPU-budgeted chunks through the bundled decode service. `startFrac`
+ * (0..1) starts mid-file — a second pass for clips whose music begins
+ * after a silent/talking intro. Returns Int16Array or null.
  */
-async function decodeToPcm(ctx, bytes, kind) {
+async function decodeToPcm(ctx, bytes, kind, startFrac = 0) {
   const origin = ctx.publicUrl(ctx.request);
   const decUrl = origin ? `${origin.replace(/\/$/, "")}/svc/dec` : null;
   if (!decUrl) return null;
@@ -141,9 +143,11 @@ async function decodeToPcm(ctx, bytes, kind) {
       if (!pages || pages.pages.length < 3) return null;
       const headB64 = bytesToB64(bytes.subarray(0, pages.headEnd));
       const ranges = oggChunkRanges(pages.pages, pages.headEnd, OPUS_PACKETS_PER_CHUNK);
+      const startIdx = Math.floor(ranges.length * Math.min(Math.max(startFrac, 0), 0.9));
       const parts = [];
       let total = 0;
-      for (const [from, to] of ranges) {
+      for (let i = startIdx; i < ranges.length; i++) {
+        const [from, to] = ranges[i];
         const r = await decCall(decUrl, { codec: "opus", head: headB64, data: bytesToB64(bytes.subarray(from, to)) });
         if (!OK(r)) continue;
         parts.push(r);
@@ -161,10 +165,11 @@ async function decodeToPcm(ctx, bytes, kind) {
       const warmupFrames = Math.max(4, Math.round(AAC_WARMUP_SECONDS * (rate / 1024)));
       const asc = bytesToB64(parsed.asc);
       const skipSamples = Math.round(AAC_WARMUP_SECONDS * 16000);
+      const startFrame = Math.floor(parsed.frames.length * Math.min(Math.max(startFrac, 0), 0.9));
       const parts = [];
       let total = 0;
-      const need = Math.min(parsed.frames.length, Math.ceil(MAX_DECODE_SECONDS * rate / 1024) + warmupFrames);
-      for (let i = 0; i < need; i += framesPerChunk) {
+      const end = Math.min(parsed.frames.length, startFrame + Math.ceil(MAX_DECODE_SECONDS * rate / 1024) + warmupFrames);
+      for (let i = startFrame; i < end; i += framesPerChunk) {
         const from = Math.max(0, i - warmupFrames);
         const to = Math.min(parsed.frames.length, i + framesPerChunk);
         const frames = [];
@@ -182,11 +187,13 @@ async function decodeToPcm(ctx, bytes, kind) {
     }
 
     if (kind === "mp3") {
-      // ~0.6 s per chunk at 128-320 kbps -> 12-40 KB slices.
+      // ~0.6 s per chunk at 128-320 kbps -> 12-40 KB slices. Mid-file start
+      // tolerates a bit of frame garbage: the mp3 decoder resyncs quickly.
       const chunkBytes = 16000;
       let total = 0;
       const parts = [];
-      for (let off = 0; off < bytes.length; off += chunkBytes) {
+      const startByte = Math.floor(bytes.length * Math.min(Math.max(startFrac, 0), 0.9));
+      for (let off = startByte; off < bytes.length; off += chunkBytes) {
         const r = await decCall(decUrl, { codec: "mp3", data: bytesToB64(bytes.subarray(off, Math.min(bytes.length, off + chunkBytes))) });
         if (!OK(r)) continue;
         parts.push(r);
